@@ -2,6 +2,13 @@
 (defpackage :ty (:use :cl :alexandria))
 (in-package :ty)
 
+(defmacro ! (&rest it)
+  (with-gensyms (result)
+    `(let ((,result ,it))
+       (format t "~A = ~A~%" ',it ,result)
+       ,result))
+)
+
 (defun alist-get (sym alist &key (test 'eq))
   (cdr (assoc sym alist :test test)))
 
@@ -41,6 +48,10 @@
 (defmethod print-object ((self -prop) stream)
   (format stream "[~A ~A.~A]" (ty-name self) (-prop-ty self) (-prop-prop self)))
 
+(defty -var var
+  (ref nil :type symbol))
+(defmethod print-object ((self -var) stream)
+  (format stream "<~A : ~A>" (ty-name self) (-var-ref self)))
 
 #|
 
@@ -94,7 +105,20 @@ refine! effectively performs assignment
 now we get into all the mess that mutable state has to offer.
 do we deep copy? what do we do?
 
+what about an alias type?
+wraps a ref to a type, and interposes itself when needed...
+what a hack...
+call it 'var' for every variable will have one.
+
 |#
+
+#|
+ third goal:
+  function application
+ fourth goal:
+  something like generics?
+|#
+
 
 
 (defun make-type-name (&optional param)
@@ -126,14 +150,20 @@ do we deep copy? what do we do?
 ;; introduce yet another representation for a resolved type?
 (defmethod resolve ((ty ty) (env env))
   ty)
+(defmethod resolve ((ty -var) (env env))
+  (resolve (-var-ref ty) env))
+
 (defmethod resolve ((name symbol) (env env))
-  (alist-get name (env-types env)))
+  (resolve (alist-get name (env-types env)) env))
+
 (defmethod resolve ((repr list) (env env))
   (ecase (car repr)
     (or repr))) ;; should already be resolved...
+
 (defmethod resolve ((ty -or) (env env))
   `(or ,(resolve (-or-a ty) env)
        ,(resolve (-or-b ty) env)))
+
 (defmethod resolve ((ty -prop) (env env))
   (let ((prop-name (-prop-prop ty))
         (ref-ty (alist-get (-prop-ty ty) (env-types env))))
@@ -193,6 +223,20 @@ do we deep copy? what do we do?
         (cons (append (car a) (car b))
               (append (cdr a) (cdr b)))))
 
+(defun parse-type (it)
+  (cond
+    ((symbolp it) it)
+    ((eq (car it) 'or)
+     (-or (second it) (third it)))
+    ((eq (car it) 'quote)
+     (-lit (second it)))
+    ((eq (car it) 'obj)
+     (-obj 
+      (plist-alist (cdr it))))
+    ((eq (car it) 'prop)
+     (-prop (second it) (third it)))
+    (t (error "unimplemented"))))
+
 ;; welcome to the evaluator
 (defmethod ty-of ((form list) env)
   (ecase (car form)
@@ -220,11 +264,26 @@ do we deep copy? what do we do?
        (multiple-value-bind (_ ty-name fx) (ty-of obj env)
          (declare (ignore _))
          (let ((ty (-prop ty-name prop)))
-           (introduce ty fx env)))))))
+           (introduce ty fx env)))))
+    (type
+     (destructuring-bind (tyname unparsed) (cdr form)
+       (values (-empty) nil `(nil . ((,tyname . ,(parse-type unparsed)))))))
+    (declare
+     (destructuring-bind (varname typename) (cdr form)
+       (let ((name (make-type-name)))
+         (values (-empty) nil
+                 `(((,varname . ,name)) . ((,name . ,(-var typename)))))))))) 
 
 (defmethod ty-equal ((a ty) (b ty) env)
   (declare (ignore env))
   (equalp a b))
+
+(defmethod ty-equal ((a -var) (b -var) env)
+  (ty-equal (lookup-type (-var-ref a) env) (lookup-type (-var-ref b) env) env))
+(defmethod ty-equal ((a -var) (b ty) env)
+  (ty-equal (lookup-type (-var-ref a) env) b env))
+(defmethod ty-equal ((a ty) (b -var) env)
+  (ty-equal b a env))
 
 (defmethod ty-equal ((a -or) (b -or) env)
   (let ((a1 (lookup-type (-or-a a) env))
@@ -235,9 +294,26 @@ do we deep copy? what do we do?
         (and (type-equal a2 b1) (type-equal a1 b2)))))
 
 (defmethod lookup-type (ty-name env)
-  (alist-get ty-name (env-types env)))
+  (or
+   (alist-get ty-name (env-types env))
+   (break)))
 
-(defun ! (it) (print it) it)
+(defun extract-prop-type (prop env)
+  (let ((target (lookup-type (-prop-ty prop) env))
+        (key  (-prop-prop prop)))
+    (flet ((get-row (obj)
+             (lookup-type (alist-get key (-obj-rows obj)) env)))
+      (typecase target
+        (-obj (values (get-row target) nil))
+        (-or
+         (let ((a (lookup-type (-or-a target) env))
+               (b (lookup-type (-or-b target) env)))
+           ;; FIXME: need to handle nested ors etc
+           ;; FIXME: requires both a and b are object types
+           (if (and (-obj-p a) (-obj-p a))
+               (combine-new-types (get-row a) (get-row b) env)
+               (values (-empty) nil))))
+        (t (values (-empty) nil))))))
 
 (defmethod make-intersection-type :around ((a ty) (b ty) env)
   (if (ty-equal a b env)
@@ -266,11 +342,17 @@ do we deep copy? what do we do?
       ((ty-equal a b env) a)
       (t (error "unimplemented")))))
 
+(defmethod make-intersection-type ((gen -prop) (nar ty) env)
+  (make-intersection-type (extract-prop-type gen env) nar env))
+
 (defmethod make-intersection-type ((nar ty) (gen -or) env)
   (make-intersection-type gen nar env))
 
 (defmethod refineable? ((gen ty) (nar ty) env)
   (ty-equal gen nar env))
+
+(defmethod refineable? ((var -var) (nar ty) env)
+  (refineable? (lookup-type (-var-ref var) env) nar env))
 
 (defmethod refineable? ((gen -or) (nar ty) env)
   (or
@@ -282,6 +364,19 @@ do we deep copy? what do we do?
 (defmethod refine (name (gen ty) (narrow ty) env)
   (unless (ty-equal gen narrow env)
     (cons nil `((,name . ,(-empty))))))
+
+(defmethod refine :around (name (gen -var) (narrow ty) env)
+  (let ((changes (refine name (lookup-type (-var-ref gen) env) narrow env)))
+    (when changes
+      (let ((replacer (make-type-name))) 
+        (cons (car changes)
+              (cons 
+               (cons name (-var replacer))
+               (mapcar (lambda (update)
+                         (if (eq (car update) name)
+                             (cons replacer (cdr update))
+                             update))
+                       (cdr changes))))))))
 
 (defun combine-new-types (a b env)
   (if (ty-equal a b env)
@@ -310,22 +405,6 @@ do we deep copy? what do we do?
                 (cons nil `((,name . ,(-empty)))))))))
 
 
-(defun extract-prop-type (prop env)
-  (let ((target (lookup-type (-prop-ty prop) env))
-        (key  (-prop-name prop)))
-    (flet ((get-row (obj)
-             (lookup-type (alist-get key (-obj-rows obj)) env)))
-      (typecase target
-        (-obj (values (get-row target) nil))
-        (-or
-         (let ((a (lookup-type (-or-a target) env))
-               (b (lookup-type (-or-b target) env)))
-           ;; FIXME: need to handle nested ors etc
-           ;; FIXME: requires both a and b are object types
-           (if (and (-obj-p a) (-obj-p a))
-               (combine-new-types (get-row a) (get-row b) env)
-               (values (-empty) nil))))
-        (t (values (-empty) nil))))))
 
 (defmethod refineable? ((gen -prop) (nar ty) env)
   ;; need to extract the specific type of the referenced property,
@@ -367,4 +446,5 @@ do we deep copy? what do we do?
                 (cons nil `((,target-type . ,b)))
                 (refine (-or-b target) target b env))))
              (t (error "should not happen")))))
-        (t (cons nil `((,name . ,(-empty)))))))))
+        (t
+         (cons nil `((,name . ,(-empty)))))))))

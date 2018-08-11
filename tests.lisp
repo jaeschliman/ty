@@ -65,11 +65,12 @@
   (print-values
    (resolve (ty-of '(get y b) env) env)))
 
-(defun chk (expr env)
+(defun chk (expr &optional (env *base-env*))
   (print-values
    (multiple-value-bind
          (ty ty-name env) (applied-ty expr env)
      (declare (ignore ty-name))
+     ;; (pprint env)
      (values ty ":" (resolve ty env)))))
 
 (let ((env (env :vars `((x . a))
@@ -183,3 +184,101 @@
 
 
 ;; and uh, someday, even nest them!
+
+;; ---------------------------------------------------------------------------
+;;;;; and now....... VAR types!
+
+
+(defparameter *var-env-0
+  (env :vars nil
+       :types
+       `((foo . ,(-lit 'foo))
+         (bar . ,(-lit 'bar))
+         (baz . ,(-lit 'baz))
+         (quux . ,(-lit 'quux))
+         (obj-foo . ,(-obj '((type . foo)
+                             (value . baz))))
+         (obj-bar . ,(-obj '((type . bar)
+                             (value . quux))))
+         (type-ref . ,(-prop 'my-obj 'type))
+         (value-ref . ,(-prop 'my-obj 'value)))))
+
+(chk '(do (declare x foo) x) *var-env-0)
+
+(chk '(do
+       (declare x foo)
+       (refine! x foo)
+       x)
+     *var-env-0)
+
+(chk '(do
+       (declare x foo)
+       (declare y foo)
+       (refine! x bar)
+       x)
+     *var-env-0)
+
+(chk '(do
+       (declare x foo)
+       (declare y foo)
+       (refine! x bar)
+       y)
+     *var-env-0)
+ 
+(chk '(do
+       (type t (or foo bar))
+       (declare x t)
+       (refine! x bar)
+       x)
+     *var-env-0)
+
+(chk '(do
+       (type t (or foo bar))
+       (declare x t)
+       (declare y t)
+       (refine! x bar)
+       y)
+     *var-env-0)
+
+(chk '(do
+       (type foo 'foo)
+       (type a (obj type foo))
+       (type p (prop a type))
+       (declare x p)
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type p-a (prop a type))
+       (type p-b (prop b type))
+       (type p (or p-a p-b))
+       (declare x p)
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type p-a (prop a type))
+       (type p-b (prop b type))
+       (type p (or p-a p-b))
+       (declare x p)
+       (refine! x foo)
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type p-a (prop a type))
+       (type p-b (prop b type))
+       (type p (or p-a p-b))
+       (declare x p)
+       (declare y p)
+       (refine! x foo)
+       y))
