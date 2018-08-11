@@ -282,3 +282,78 @@
        (declare y p)
        (refine! x foo)
        y))
+
+(chk '(do
+       (type foo 'foo)
+       (type a (obj type foo))
+       (declare object a)
+       (def x (get object type))
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type a (obj type foo))
+       (declare object a)
+       (def x (get object type))
+       (refine! x foo)
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type c (or a b))
+       (declare object c)
+       (def x (get object type))
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type c (or a b))
+       (declare object c)
+       (def x (get object type))
+       (refine! x foo)
+       x))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type c (or a b))
+       (declare object c)
+       (def x (get object type))
+       (def y (get object type))
+       (refine! x foo)
+       y))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type c (or a b))
+       (declare object c)
+       (declare object2 c)
+       (def x (get object type))
+       (def y (get object2 type))
+       (refine! x foo)
+       y))
+
+(chk '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type data-foo 'data-foo)
+       (type data-bar 'data-bar)
+       (type a (obj type foo data data-foo))
+       (type b (obj type bar data data-bar))
+       (type c (or a b))
+       (declare object c)
+       (def x (get object type))
+       (def y (get object data))
+       (refine! x foo)
+       y))

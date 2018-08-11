@@ -169,12 +169,24 @@ call it 'var' for every variable will have one.
         (ref-ty (alist-get (-prop-ty ty) (env-types env))))
     (labels ((lookup-in (ty)
                (typecase ty
+                 (-or
+                  `(or
+                    ,(lookup-in (resolve (-or-a ty) env))
+                    ,(lookup-in (resolve (-or-b ty) env))))
+                 (-var
+                  (lookup-in (resolve ty env)))
                  (-prop
                   (lookup-in (resolve ty env)))
                  (-obj
                   (resolve (alist-get prop-name (-obj-rows ty)) env))
-                 (t nil))))
+                 (list
+                  (assert (eq (car ty) 'or))
+                  `(or ,(lookup-in (second ty))
+                       ,(lookup-in (third ty))))
+                 (t (error "resolve internal error")))))
       (cond
+        ((typep ref-ty '-var)
+         (lookup-in ref-ty))
         ((typep ref-ty '-obj)
          (lookup-in ref-ty))
         ((typep ref-ty '-prop)
@@ -272,7 +284,13 @@ call it 'var' for every variable will have one.
      (destructuring-bind (varname typename) (cdr form)
        (let ((name (make-type-name)))
          (values (-empty) nil
-                 `(((,varname . ,name)) . ((,name . ,(-var typename)))))))))) 
+                 `(((,varname . ,name)) . ((,name . ,(-var typename))))))))
+    (def
+     (destructuring-bind (varname subform) (cdr form)
+       (multiple-value-bind (ty type-name fx) (ty-of subform env)
+         (assert (not (-empty-p ty)))
+         (values (-empty) nil
+                 (combine-effects `(((,varname . ,type-name)) . nil) fx))))))) 
 
 (defmethod ty-equal ((a ty) (b ty) env)
   (declare (ignore env))
@@ -417,34 +435,39 @@ call it 'var' for every variable will have one.
          (key (-prop-prop gen)))
     (flet ((get-row (obj)
              (lookup-type (alist-get key (-obj-rows obj)) env)))
-      (typecase target
-        (-obj
-         (let* ((row-type (get-row target))
-                (update (refine name row-type nar env)))
-           (or update (cons nil `((,name . ,nar))))))
-        (-or
-         (let* ((a (lookup-type (-or-a target) env))
-                (b (lookup-type (-or-b target) env))
-                (row-a (get-row a))
-                (row-b (get-row b))
-                (a? (refineable? row-a nar env))
-                (b? (refineable? row-b nar env)))
-           (cond
-             ((and a? b?) (error "unimplemented"))
-             (a?
-              (combine-effects
-               (or (refine name row-a nar env)
-                   (cons nil `((,name . ,nar))))
-               (combine-effects
-                (cons nil `((,target-type . ,a)))
-                (refine (-or-a target) target a env))))
-             (b?
-              (combine-effects
-               (or (refine name row-b nar env)
-                   (cons nil `((,name . ,nar))))
-               (combine-effects
-                (cons nil `((,target-type . ,b)))
-                (refine (-or-b target) target b env))))
-             (t (error "should not happen")))))
-        (t
-         (cons nil `((,name . ,(-empty)))))))))
+      (labels ((recur (target)
+                 (typecase target
+                   (-var
+                    (let ((new-target (lookup-type (-var-ref target) env)))
+                      (recur new-target)))
+                   (-obj
+                    (let* ((row-type (get-row target))
+                           (update (refine name row-type nar env)))
+                      (or update (cons nil `((,name . ,nar))))))
+                   (-or
+                    (let* ((a (lookup-type (-or-a target) env))
+                           (b (lookup-type (-or-b target) env))
+                           (row-a (get-row a))
+                           (row-b (get-row b))
+                           (a? (refineable? row-a nar env))
+                           (b? (refineable? row-b nar env)))
+                      (cond
+                        ((and a? b?) (error "unimplemented"))
+                        (a?
+                         (combine-effects
+                          (or (refine name row-a nar env)
+                              (cons nil `((,name . ,nar))))
+                          (combine-effects
+                           (cons nil `((,target-type . ,a)))
+                           (refine (-or-a target) target a env))))
+                        (b?
+                         (combine-effects
+                          (or (refine name row-b nar env)
+                              (cons nil `((,name . ,nar))))
+                          (combine-effects
+                           (cons nil `((,target-type . ,b)))
+                           (refine (-or-b target) target b env))))
+                        (t (error "should not happen")))))
+                   (t
+                    (cons nil `((,name . ,(-empty))))))))
+        (recur target)))))
