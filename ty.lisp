@@ -269,6 +269,24 @@ call it 'var' for every variable will have one.
       (expand (-or-b ty))
       (remove-duplicates expanded :test #'teq))))
 
+(defun create-or-type (list-of-types env)
+  (labels ((combine1 (a b)
+             (let* ((na (make-type-name))
+                    (nb (make-type-name))
+                    (ty (-or na nb)))
+               (values ty (tfx na a nb b))))
+           (combine (a b &rest more)
+             (if more
+                 (multiple-value-bind (ty fx) (combine1 a b)
+                   (multiple-value-bind (ty2 fx2) (apply #'combine ty more)
+                     (values ty2 (combine-effects fx2 fx))))
+                 (combine1 a b)))
+           (teq (a b) (ty-equal a b env)))
+    (let ((types (remove-duplicates list-of-types :test #'teq)))
+      (if (= 1 (length types))
+          (values (first types) nil)
+          (apply #'combine types)))))
+
 ;;; ---- ty-equal
 
 (defmethod ty-equal ((a ty) (b ty) env)
@@ -286,12 +304,15 @@ call it 'var' for every variable will have one.
 (defmethod ty-equal ((a ty) (b -var) env)
   (ty-equal b a env))
 
-(defmethod ty-equal ((a -or) (b -or) env)
+(defun expanded-or-types-equal (exp-a exp-b env)
   (flet ((teq (a b) (ty-equal a b env)))
-    (let* ((exp-a (expand-or-type a env))
-           (exp-b (expand-or-type b env)))
-      (and (= (length exp-a) (length exp-b))
-           (= 0 (length (set-difference exp-a exp-b :test #'teq)))))))
+    (and (= (length exp-a) (length exp-b))
+         (null (set-difference exp-a exp-b :test #'teq)))))
+
+(defmethod ty-equal ((a -or) (b -or) env)
+  (let* ((exp-a (expand-or-type a env))
+         (exp-b (expand-or-type b env)))
+    (expanded-or-types-equal exp-a exp-b env)))
 
 ;;; ---- ty-of
 ;; ty-of applies to code in the env, returns 3 values,
@@ -427,7 +448,7 @@ call it 'var' for every variable will have one.
 
 (defmethod make-intersection-type ((a ty) (b ty) env)
   (declare (ignore a b env))
-  (-empty))
+  (values (-empty) nil))
 
 (defmethod make-intersection-type ((a -or) (b -or) env)
   (declare (ignore env))
@@ -441,10 +462,10 @@ call it 'var' for every variable will have one.
          (no-a (-empty-p a))
          (no-b (-empty-p b)))
     (cond
-      ((and no-a no-b) (-empty))
-      (no-a b)
-      (no-b a)
-      ((ty-equal a b env) a)
+      ((and no-a no-b) (values (-empty) nil))
+      (no-a (values b nil))
+      (no-b (values a nil))
+      ((ty-equal a b env) (values a nil))
       (t (error "unimplemented")))))
 
 (defmethod make-intersection-type ((gen -prop) (nar ty) env)
@@ -499,13 +520,20 @@ call it 'var' for every variable will have one.
          (a? (refineable? ty-a narrow env))
          (b? (refineable? ty-b narrow env)))
     (if (and a? b?)
-        (let ((a-inter (make-intersection-type ty-a narrow env))
-              (b-inter (make-intersection-type ty-b narrow env)))
-          (combine-new-types a-inter b-inter env))
+        (multiple-value-bind (a-type a-fx)
+            (make-intersection-type ty-a narrow env)
+          (multiple-value-bind (b-type b-fx)
+              (make-intersection-type ty-b narrow env)
+            (combine-effects a-fx b-fx
+                             (combine-new-types a-type b-type env))))
         (if a?
-            (tfx name (make-intersection-type ty-a narrow env)) 
+            (multiple-value-bind (a-type a-fx)
+                (make-intersection-type ty-a narrow env)
+              (combine-effects (tfx name a-type) a-fx))
             (if b?
-                (tfx name (make-intersection-type ty-b narrow env))
+                (multiple-value-bind (b-type b-fx)
+                    (make-intersection-type ty-b narrow env)
+                  (combine-effects (tfx name b-type) b-fx))
                 (combine-effects
                  (tfx name (-empty))
                  (efx (format nil "Cannot refine ~A to ~A" gen narrow))))))))

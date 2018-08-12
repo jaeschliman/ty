@@ -520,6 +520,26 @@
   (is (ty-equal (-or 'foo 'bar) (-or 'bar 'foo) *expand-or-types-env))
   (is (ty-equal (-or 'a 'baz) (-or 'b 'bar) *expand-or-types-env)))
 
+(test contract-or-types-0
+  (flet ((test-or-type-creation (&rest types)
+           (multiple-value-bind (ty fx) (create-or-type types *base-env*)
+             (let* ((env (apply-effects *base-env* fx))
+                    (expansion
+                     (typecase ty
+                       (-or (expand-or-type ty env))
+                       (t   (list ty)))))
+               (flet ((teq (a b) (ty-equal a b env)))
+                 (expanded-or-types-equal expansion
+                                          (remove-duplicates types :test #'teq)
+                                          env))))))
+    (is (test-or-type-creation (-lit 'a)))
+    (is (test-or-type-creation (-lit 'a) (-lit 'b)))
+    (is (test-or-type-creation (-lit 'a) (-lit 'b) (-lit 'c)))
+    (is (test-or-type-creation (-lit 'a) (-lit 'b) (-lit 'c) (-lit 'd)))
+
+    (is (test-or-type-creation (-lit 'a) (-lit 'b) (-lit 'a) (-lit 'b)))
+    (is (test-or-type-creation (-lit 'a) (-lit 'a)))))
+
 
 (run! 'initial-inferences)
 
