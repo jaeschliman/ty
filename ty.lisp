@@ -7,8 +7,7 @@
   (with-gensyms (result)
     `(let ((,result ,it))
        (format t "~A = ~A~%" ',it ,result)
-       ,result))
-)
+       ,result)))
 
 (defun alist-get (sym alist &key (test 'eq))
   (cdr (assoc sym alist :test test)))
@@ -130,7 +129,7 @@ call it 'var' for every variable will have one.
   (gensym))
 
 (defstruct env
-  vars types)
+  vars types errors)
 
 (defun lookup-type (ty-name env)
   (or
@@ -144,20 +143,23 @@ call it 'var' for every variable will have one.
 
 (defparameter *base-env*
   (make-env :vars nil
-            :types `((int . ,(-int)))))
+            :types `((int . ,(-int)))
+            :errors nil))
 
-(defmethod extend ((env env) (vars null) (types null)) env)
-(defmethod extend ((env env) vars types)
-  (make-env :vars (append vars (env-vars env))
-            :types (append types (env-types env))))
+(defun extend (env &key vars types errors)
+  (if (or vars types errors)
+      (make-env :vars (append vars (env-vars env))
+                :types (append types (env-types env))
+                :errors (append errors (env-errors env)))
+      env))
 
-(defun env (&key (vars nil) (types nil))
-  (extend *base-env* vars types))
+(defun env (&key (vars nil) (types nil) (errors nil))
+  (extend *base-env* :vars vars :types types :errors errors))
 
 (defun apply-effects (env fx)
   (if (null fx)
       env
-      (extend env (car fx) (cdr fx))))
+      (extend env :vars (car fx) :types (cdr fx))))
 
 ;; for debugging?
 ;; but can't resolve an or type, because it uses refs >.<
@@ -407,7 +409,7 @@ call it 'var' for every variable will have one.
 ;; refine: named general type + narrow type -> maybe side effects
 (defmethod refine :around (name (gen ty) (narrow ty) env)
   (declare (ignore name env))
-  (print (list (type-of gen) '=> (type-of narrow)))
+  ;; (print (list (type-of gen) '=> (type-of narrow)))
   (call-next-method))
 
 (defmethod refine (name (gen ty) (narrow ty) env)
