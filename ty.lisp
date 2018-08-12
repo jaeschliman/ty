@@ -286,6 +286,44 @@ call it 'var' for every variable will have one.
      (-prop (second it) (third it)))
     (t (error "unimplemented"))))
 
+(defmethod expand-or-type ((ty -or) env)
+  (let (expanded)
+    (flet ((expand (tyname)
+             (let ((it (lookup-type-through-vars tyname env)))
+               (typecase it
+                 (-or (setf expanded (append (expand-or-type it env) expanded)))
+                 (t (push it expanded)))))
+           (teq (a b)
+             (ty-equal a b env)))
+      (expand (-or-a ty))
+      (expand (-or-b ty))
+      (remove-duplicates expanded :test #'teq))))
+
+;;; ---- ty-equal
+
+(defmethod ty-equal ((a ty) (b ty) env)
+  (declare (ignore env))
+  (equalp a b))
+
+(defmethod ty-equal ((a -var) (b -var) env)
+  (ty-equal (lookup-type (-var-ref a) env)
+            (lookup-type (-var-ref b) env)
+            env))
+
+(defmethod ty-equal ((a -var) (b ty) env)
+  (ty-equal (lookup-type (-var-ref a) env) b env))
+
+(defmethod ty-equal ((a ty) (b -var) env)
+  (ty-equal b a env))
+
+(defmethod ty-equal ((a -or) (b -or) env)
+  (flet ((teq (a b) (ty-equal a b env)))
+    (let* ((exp-a (expand-or-type a env))
+           (exp-b (expand-or-type b env)))
+      (and (= (length exp-a) (length exp-b))
+           (= 0 (length (set-difference exp-a exp-b :test #'teq)))))))
+
+;;; ---- ty-of
 ;; welcome to the evaluator
 (defmethod ty-of ((form list) env)
   (ecase (car form)
@@ -340,25 +378,6 @@ call it 'var' for every variable will have one.
                     (vfx varname var-type)
                     (tfx var-type (-var type-name))
                     fx)))))))) 
-
-(defmethod ty-equal ((a ty) (b ty) env)
-  (declare (ignore env))
-  (equalp a b))
-
-(defmethod ty-equal ((a -var) (b -var) env)
-  (ty-equal (lookup-type (-var-ref a) env) (lookup-type (-var-ref b) env) env))
-(defmethod ty-equal ((a -var) (b ty) env)
-  (ty-equal (lookup-type (-var-ref a) env) b env))
-(defmethod ty-equal ((a ty) (b -var) env)
-  (ty-equal b a env))
-
-(defmethod ty-equal ((a -or) (b -or) env)
-  (let ((a1 (lookup-type (-or-a a) env))
-        (a2 (lookup-type (-or-b a) env))
-        (b1 (lookup-type (-or-a b) env))
-        (b2 (lookup-type (-or-b b) env)))
-    (or (and (type-equal a1 b1) (type-equal a2 b2))
-        (and (type-equal a2 b1) (type-equal a1 b2)))))
 
 ;;well, this was buggy!
 (defun combine-new-types (a b env)

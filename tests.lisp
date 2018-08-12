@@ -501,6 +501,26 @@
      (refine! nest a)
      y)))
 
+(defparameter *expand-or-types-env
+  (envq :vars ((x 'x))
+        :types ((foo (-lit 'foo))
+                (bar (-lit 'bar))
+                (baz (-lit 'baz))
+                (a   (-or 'foo 'bar))
+                (b   (-or 'foo 'baz))
+                (c   (-or 'baz 'foo))
+                (x   (-or 'a 'b)))) )
+
+(test expand-or-types-0
+  (let* ((env *expand-or-types-env)
+        (expected (list (-lit 'baz) (-lit 'bar) (-lit 'foo)))
+        (result (expand-or-type (-or 'a 'b) env)))
+    (is (equalp expected result)))
+
+  (is (ty-equal (-or 'foo 'bar) (-or 'bar 'foo) *expand-or-types-env))
+  (is (ty-equal (-or 'a 'baz) (-or 'b 'bar) *expand-or-types-env)))
+
+
 (run! 'initial-inferences)
 
 (chk '(do
@@ -513,7 +533,8 @@
        (type c (or a b))
        (type d (obj nested c))
        (declare object d)
-       (def! nest (get object nested)) ;;sigh....
+       ;; (def! nest (get object nested)) ;;sigh....
+       (def nest (get object nested)) ;;sigh....
        (def x (get (get object nested) type))
        (def y (get (get object nested) data))
        (refine! nest a)
