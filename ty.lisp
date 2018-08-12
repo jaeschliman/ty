@@ -241,36 +241,6 @@ call it 'var' for every variable will have one.
         ;; can't resolve
         (t ty)))))
 
-;; ty-of applies to code in the env, returns 3 values,
-;; the ty of the thing,
-;; the ty-name of the type,
-;; an optional side effects struct,
-;; note that this requires a ty-name for fucking everything
-;; is it required that ty-name be bound before applying side-effects?
-;; I would think not. need a way to introduce types from an expression...
-;; but why?
-;; try typing a nested get
-;; TODO: another value for refinements?
-(defgeneric ty-of (thing env))
-(defmethod  applied-ty (thing env)
-  (multiple-value-bind (ty ty-name side-effects) (ty-of thing env)
-    (values ty ty-name (apply-effects env side-effects))))
-
-(defmethod ty-of ((var symbol) env)
-  (let* ((ty-name (alist-get var (env-vars env)))
-         (ty      (alist-get ty-name (env-types env))))
-    (values ty ty-name nil)))
-
-(defmethod ty-of ((num integer) env)
-  (values (alist-get 'int (env-types env)) 'int nil))
-
-(defun introduce (ty fx env)
-  ;; FIXME: rev-lookup-type has horrible performance...
-  (multiple-value-bind (existing-ty name) (rev-lookup-type ty env)
-    (if existing-ty
-        (values existing-ty name fx)
-        (let ((nm (make-type-name)))
-          (values ty nm (combine-effects fx (tfx nm ty)))))))
 
 (defun parse-type (it)
   (cond
@@ -324,6 +294,39 @@ call it 'var' for every variable will have one.
            (= 0 (length (set-difference exp-a exp-b :test #'teq)))))))
 
 ;;; ---- ty-of
+;; ty-of applies to code in the env, returns 3 values,
+;; the ty of the thing,
+;; the ty-name of the type,
+;; an optional side effects struct,
+;; note that this requires a ty-name for fucking everything
+;; is it required that ty-name be bound before applying side-effects?
+;; I would think not. need a way to introduce types from an expression...
+;; but why?
+;; try typing a nested get
+;; TODO: another value for refinements?
+
+(defgeneric ty-of (thing env))
+
+(defun introduce (ty fx env)
+  ;; FIXME: rev-lookup-type has horrible performance...
+  (multiple-value-bind (existing-ty name) (rev-lookup-type ty env)
+    (if existing-ty
+        (values existing-ty name fx)
+        (let ((nm (make-type-name)))
+          (values ty nm (combine-effects fx (tfx nm ty)))))))
+
+(defmethod  applied-ty (thing env)
+  (multiple-value-bind (ty ty-name side-effects) (ty-of thing env)
+    (values ty ty-name (apply-effects env side-effects))))
+
+(defmethod ty-of ((var symbol) env)
+  (let* ((ty-name (alist-get var (env-vars env)))
+         (ty      (alist-get ty-name (env-types env))))
+    (values ty ty-name nil)))
+
+(defmethod ty-of ((num integer) env)
+  (values (alist-get 'int (env-types env)) 'int nil))
+
 ;; welcome to the evaluator
 (defmethod ty-of ((form list) env)
   (ecase (car form)
