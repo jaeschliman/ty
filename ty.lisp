@@ -1,5 +1,6 @@
 (ql:quickload :alexandria)
-(defpackage :ty (:use :cl :alexandria))
+(ql:quickload :fiveAM)
+(defpackage :ty (:use :cl :alexandria :5am))
 (in-package :ty)
 
 (defmacro ! (&rest it)
@@ -12,10 +13,13 @@
 (defun alist-get (sym alist &key (test 'eq))
   (cdr (assoc sym alist :test test)))
 
-(defun rev-alist-get (value alist &key (test 'equalp))
+(defun rev-assoc (value alist &key (test 'equalp))
   (loop for (key . val) in alist do
        (when (funcall test value val)
-         (return key))))
+         (return (cons key val)))))
+
+(defun rev-alist-get (value alist &key (test 'equalp))
+  (car (rev-assoc value alist :test test)))
 
 (defstruct (ty (:constructor nil)) name)
 (defmethod print-object ((self ty) stream)
@@ -128,6 +132,16 @@ call it 'var' for every variable will have one.
 (defstruct env
   vars types)
 
+(defun lookup-type (ty-name env)
+  (or
+   (alist-get ty-name (env-types env))
+   (break)))
+
+(defun rev-lookup-type (ty env)
+  (if-let (pair (rev-assoc ty (env-types env)))
+    (values (cdr pair) (car pair))
+    (values nil nil)))
+
 (defparameter *base-env*
   (make-env :vars nil
             :types `((int . ,(-int)))))
@@ -148,6 +162,8 @@ call it 'var' for every variable will have one.
 ;; for debugging?
 ;; but can't resolve an or type, because it uses refs >.<
 ;; introduce yet another representation for a resolved type?
+(defmethod resolve ((null null) (env env))
+  (assert nil))
 (defmethod resolve ((ty ty) (env env))
   ty)
 (defmethod resolve ((ty -var) (env env))
@@ -169,6 +185,10 @@ call it 'var' for every variable will have one.
         (ref-ty (alist-get (-prop-ty ty) (env-types env))))
     (labels ((lookup-in (ty)
                (typecase ty
+                 (-obj
+                  (let ((prop-type (alist-get prop-name (-obj-rows ty))))
+                    (assert prop-type)
+                    (resolve prop-type env)))
                  (-or
                   `(or
                     ,(lookup-in (resolve (-or-a ty) env))
@@ -177,8 +197,6 @@ call it 'var' for every variable will have one.
                   (lookup-in (resolve ty env)))
                  (-prop
                   (lookup-in (resolve ty env)))
-                 (-obj
-                  (resolve (alist-get prop-name (-obj-rows ty)) env))
                  (list
                   (assert (eq (car ty) 'or))
                   `(or ,(lookup-in (second ty))
@@ -192,13 +210,7 @@ call it 'var' for every variable will have one.
         ((typep ref-ty '-prop)
          (lookup-in ref-ty))
         ((typep ref-ty '-or)
-         (destructuring-bind (_ a b) (resolve ref-ty env)
-           (declare (ignore _))
-           (if-let ((a-ty (lookup-in a))
-                    (b-ty (lookup-in b)))
-             `(or ,a-ty ,b-ty)
-             ;; give up otherwise
-             ty)))
+         (lookup-in ref-ty))
         ;; can't resolve
         (t ty)))))
 
@@ -226,9 +238,12 @@ call it 'var' for every variable will have one.
   (values (alist-get 'int (env-types env)) 'int nil))
 
 (defun introduce (ty fx env)
-  (declare (ignore env)) ;; may use it to optimize later
-  (let ((nm (make-type-name)))
-    (values ty nm (cons (car fx) (acons nm ty (cdr fx))))))
+  ;; FIXME: rev-lookup-type has horrible performance...
+  (multiple-value-bind (existing-ty name) (rev-lookup-type ty env)
+    (if existing-ty
+        (values existing-ty name fx)
+        (let ((nm (make-type-name)))
+          (values ty nm (cons (car fx) (acons nm ty (cdr fx))))))))
 
 (defun combine-effects (a b)
   (when (or a b)
@@ -285,12 +300,21 @@ call it 'var' for every variable will have one.
        (let ((name (make-type-name)))
          (values (-empty) nil
                  `(((,varname . ,name)) . ((,name . ,(-var typename))))))))
-    (def
+    (def!
      (destructuring-bind (varname subform) (cdr form)
        (multiple-value-bind (ty type-name fx) (ty-of subform env)
          (assert (not (-empty-p ty)))
          (values (-empty) nil
-                 (combine-effects `(((,varname . ,type-name)) . nil) fx))))))) 
+                 (combine-effects `(((,varname . ,type-name)) . nil) fx)))))
+    (def
+     (destructuring-bind (varname subform) (cdr form)
+       (multiple-value-bind (ty type-name fx) (ty-of subform env)
+         (assert (not (-empty-p ty)))
+         (let ((var-type (make-type-name)))
+           (values (-empty) nil
+                   (combine-effects `(((,varname . ,var-type)) .
+                                      ((,var-type . ,(-var type-name))))
+                                    fx)))))))) 
 
 (defmethod ty-equal ((a ty) (b ty) env)
   (declare (ignore env))
@@ -311,10 +335,12 @@ call it 'var' for every variable will have one.
     (or (and (type-equal a1 b1) (type-equal a2 b2))
         (and (type-equal a2 b1) (type-equal a1 b2)))))
 
-(defmethod lookup-type (ty-name env)
-  (or
-   (alist-get ty-name (env-types env))
-   (break)))
+(defmethod lookup-type-through-vars (name env)
+  (loop
+     for ty-name = name then (-var-ref ty)
+     for ty = (lookup-type ty-name env)
+     while (-var-p ty)
+     finally (return ty)))
 
 (defun extract-prop-type (prop env)
   (let ((target (lookup-type (-prop-ty prop) env))
@@ -379,6 +405,11 @@ call it 'var' for every variable will have one.
    (refineable? (lookup-type (-or-b gen) env) nar env)))
 
 ;; refine: named general type + narrow type -> maybe side effects
+(defmethod refine :around (name (gen ty) (narrow ty) env)
+  (declare (ignore name env))
+  (print (list (type-of gen) '=> (type-of narrow)))
+  (call-next-method))
+
 (defmethod refine (name (gen ty) (narrow ty) env)
   (unless (ty-equal gen narrow env)
     (cons nil `((,name . ,(-empty))))))
@@ -431,7 +462,7 @@ call it 'var' for every variable will have one.
 
 (defmethod refine (name (gen -prop) (nar ty) env)
   (let* ((target-type (-prop-ty gen))
-         (target (lookup-type target-type env))
+         (target (lookup-type-through-vars target-type env))
          (key (-prop-prop gen)))
     (flet ((get-row (obj)
              (lookup-type (alist-get key (-obj-rows obj)) env)))
@@ -468,6 +499,15 @@ call it 'var' for every variable will have one.
                            (cons nil `((,target-type . ,b)))
                            (refine (-or-b target) target b env))))
                         (t (error "should not happen")))))
+                   (-prop
+                    (let* ((sub-target (lookup-type-through-vars
+                                        (-prop-ty target) env))
+                           (new-type (progn
+                                       (check-type sub-target -obj)
+                                       (alist-get (-prop-prop target)
+                                                  (-obj-rows sub-target))))
+                           (new-target (lookup-type new-type env)))
+                      (recur new-target)))
                    (t
                     (cons nil `((,name . ,(-empty))))))))
         (recur target)))))
