@@ -130,6 +130,8 @@ call it 'var' for every variable will have one.
 
 (defstruct env
   vars types errors)
+(defstruct effects
+  vars types errors)
 
 (defun lookup-type (ty-name env)
   (or
@@ -156,10 +158,33 @@ call it 'var' for every variable will have one.
 (defun env (&key (vars nil) (types nil) (errors nil))
   (extend *base-env* :vars vars :types types :errors errors))
 
+(defun vfx (&rest keys-and-values)
+  (make-effects :vars (plist-alist keys-and-values)))
+(defun tfx (&rest keys-and-values)
+  (make-effects :types (plist-alist keys-and-values)))
+(defun efx (&rest messages)
+  (make-effects :errors messages))
+
+(defun combine-effects (a b &rest more)
+  (if more
+      (apply 'combine-effects (combine-effects a b) more)
+      (cond
+        ((and a b)
+         (make-effects
+          :vars (append (effects-vars a) (effects-vars b))
+          :types (append (effects-types a) (effects-types b))
+          :errors (append (effects-errors a) (effects-errors b))))
+        (a a)
+        (b b))))
+
 (defun apply-effects (env fx)
   (if (null fx)
       env
-      (extend env :vars (car fx) :types (cdr fx))))
+      (extend
+       env
+       :vars (effects-vars fx)
+       :types (effects-types fx)
+       :errors (effects-errors fx))))
 
 ;; for debugging?
 ;; but can't resolve an or type, because it uses refs >.<
@@ -219,7 +244,7 @@ call it 'var' for every variable will have one.
 ;; ty-of applies to code in the env, returns 3 values,
 ;; the ty of the thing,
 ;; the ty-name of the type,
-;; a list of side effects ((sym . ty-name) (ty-name . type)),
+;; an optional side effects struct,
 ;; note that this requires a ty-name for fucking everything
 ;; is it required that ty-name be bound before applying side-effects?
 ;; I would think not. need a way to introduce types from an expression...
@@ -245,12 +270,7 @@ call it 'var' for every variable will have one.
     (if existing-ty
         (values existing-ty name fx)
         (let ((nm (make-type-name)))
-          (values ty nm (cons (car fx) (acons nm ty (cdr fx))))))))
-
-(defun combine-effects (a b)
-  (when (or a b)
-        (cons (append (car a) (car b))
-              (append (cdr a) (cdr b)))))
+          (values ty nm (combine-effects fx (tfx nm ty)))))))
 
 (defun parse-type (it)
   (cond
@@ -296,27 +316,30 @@ call it 'var' for every variable will have one.
            (introduce ty fx env)))))
     (type
      (destructuring-bind (tyname unparsed) (cdr form)
-       (values (-empty) nil `(nil . ((,tyname . ,(parse-type unparsed)))))))
+       (values (-empty) nil (tfx tyname (parse-type unparsed)))))
     (declare
      (destructuring-bind (varname typename) (cdr form)
        (let ((name (make-type-name)))
          (values (-empty) nil
-                 `(((,varname . ,name)) . ((,name . ,(-var typename))))))))
+                 (combine-effects
+                  (vfx varname name)
+                  (tfx name (-var typename)))))))
     (def!
      (destructuring-bind (varname subform) (cdr form)
-       (multiple-value-bind (ty type-name fx) (ty-of subform env)
+       (multiple-value-bind (ty typename fx) (ty-of subform env)
          (assert (not (-empty-p ty)))
          (values (-empty) nil
-                 (combine-effects `(((,varname . ,type-name)) . nil) fx)))))
+                 (combine-effects (vfx varname typename) fx)))))
     (def
      (destructuring-bind (varname subform) (cdr form)
        (multiple-value-bind (ty type-name fx) (ty-of subform env)
          (assert (not (-empty-p ty)))
          (let ((var-type (make-type-name)))
            (values (-empty) nil
-                   (combine-effects `(((,varname . ,var-type)) .
-                                      ((,var-type . ,(-var type-name))))
-                                    fx)))))))) 
+                   (combine-effects
+                    (vfx varname var-type)
+                    (tfx var-type (-var type-name))
+                    fx)))))))) 
 
 (defmethod ty-equal ((a ty) (b ty) env)
   (declare (ignore env))
@@ -336,6 +359,20 @@ call it 'var' for every variable will have one.
         (b2 (lookup-type (-or-b b) env)))
     (or (and (type-equal a1 b1) (type-equal a2 b2))
         (and (type-equal a2 b1) (type-equal a1 b2)))))
+
+;;well, this was buggy!
+(defun combine-new-types (a b env)
+  (if (ty-equal a b env)
+      (values a (make-effects :types (acons (make-type-name) a nil)))
+      (let* ((an (make-type-name))
+             (bn (make-type-name))
+             (cn (make-type-name))
+             (ty (-or an bn)))
+        (values ty
+                (make-effects
+                 :types (list (cons an a)
+                              (cons bn b)
+                              (cons cn ty)))))))
 
 (defmethod lookup-type-through-vars (name env)
   (loop
@@ -414,30 +451,24 @@ call it 'var' for every variable will have one.
 
 (defmethod refine (name (gen ty) (narrow ty) env)
   (unless (ty-equal gen narrow env)
-    (cons nil `((,name . ,(-empty))))))
+    (make-effects
+     :types (acons name (-empty) nil)
+     :errors (list (format nil "Cannot narrow ~A to ~A" gen narrow)))))
 
 (defmethod refine :around (name (gen -var) (narrow ty) env)
   (let ((changes (refine name (lookup-type (-var-ref gen) env) narrow env)))
     (when changes
       (let ((replacer (make-type-name))) 
-        (cons (car changes)
-              (cons 
-               (cons name (-var replacer))
-               (mapcar (lambda (update)
-                         (if (eq (car update) name)
-                             (cons replacer (cdr update))
-                             update))
-                       (cdr changes))))))))
-
-(defun combine-new-types (a b env)
-  (if (ty-equal a b env)
-      (cons nil `((,(make-type-name) . ,a)))
-      (let ((an (make-type-name))
-            (bn (make-type-name))
-            (cn (make-type-name)))
-        (cons nil `((,an a)
-                    (,bn b)
-                    (,cn ,(-or an bn)))))))
+        (make-effects
+         :vars (effects-vars changes)
+         :types (cons 
+                 (cons name (-var replacer))
+                 (mapcar (lambda (update)
+                           (if (eq (car update) name)
+                               (cons replacer (cdr update))
+                               update))
+                         (effects-types changes)))
+         :errors (effects-errors changes))))))
 
 (defmethod refine (name (gen -or) (narrow ty) env)
   ;; incomplete: multi-valued ors
@@ -450,12 +481,12 @@ call it 'var' for every variable will have one.
               (b-inter (make-intersection-type ty-b narrow env)))
           (combine-new-types a-inter b-inter env))
         (if a?
-            (cons nil `((,name . ,(make-intersection-type ty-a narrow env))))
+            (tfx name (make-intersection-type ty-a narrow env)) 
             (if b?
-                (cons nil `((,name . ,(make-intersection-type ty-b narrow env))))
-                (cons nil `((,name . ,(-empty)))))))))
-
-
+                (tfx name (make-intersection-type ty-b narrow env))
+                (combine-effects
+                 (tfx name (-empty))
+                 (efx (format nil "Cannot refine ~A to ~A" gen narrow))))))))
 
 (defmethod refineable? ((gen -prop) (nar ty) env)
   ;; need to extract the specific type of the referenced property,
@@ -476,7 +507,7 @@ call it 'var' for every variable will have one.
                    (-obj
                     (let* ((row-type (get-row target))
                            (update (refine name row-type nar env)))
-                      (or update (cons nil `((,name . ,nar))))))
+                      (or update (tfx name nar))))
                    (-or
                     (let* ((a (lookup-type (-or-a target) env))
                            (b (lookup-type (-or-b target) env))
@@ -488,18 +519,14 @@ call it 'var' for every variable will have one.
                         ((and a? b?) (error "unimplemented"))
                         (a?
                          (combine-effects
-                          (or (refine name row-a nar env)
-                              (cons nil `((,name . ,nar))))
-                          (combine-effects
-                           (cons nil `((,target-type . ,a)))
-                           (refine (-or-a target) target a env))))
+                          (or (refine name row-a nar env) (tfx name nar))
+                          (tfx target-type a)
+                          (refine (-or-a target) target a env)))
                         (b?
                          (combine-effects
-                          (or (refine name row-b nar env)
-                              (cons nil `((,name . ,nar))))
-                          (combine-effects
-                           (cons nil `((,target-type . ,b)))
-                           (refine (-or-b target) target b env))))
+                          (or (refine name row-b nar env) (tfx name nar))
+                          (tfx target-type b) 
+                          (refine (-or-b target) target b env)))
                         (t (error "should not happen")))))
                    (-prop
                     (let* ((sub-target (lookup-type-through-vars
@@ -511,5 +538,7 @@ call it 'var' for every variable will have one.
                            (new-target (lookup-type new-type env)))
                       (recur new-target)))
                    (t
-                    (cons nil `((,name . ,(-empty))))))))
+                    (combine-effects
+                     (tfx name (-empty))
+                     (efx (format nil "Could not refine ~A to ~A" gen nar)))))))
         (recur target)))))
