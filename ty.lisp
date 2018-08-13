@@ -9,6 +9,35 @@
        (format t "~A = ~A~%" ',it ,result)
        ,result)))
 
+(defun %bb-thread-clauses (clauses)
+  (let (threads)
+    (loop while clauses do
+         (let ((it (pop clauses)))
+           (cond
+             ((and (eq it :db) clauses)
+              (let* ((vals (pop clauses))
+                     (form (pop clauses)))
+                (push (list 'destructuring-bind vals form) threads)))
+             ((and (eq it :mv) clauses)
+              (let* ((vals (pop clauses))
+                     (form (pop clauses))
+                     (ignore (when (member '_ vals)
+                               `((declare (ignore _))))))
+                (push (list* 'multiple-value-bind vals form ignore) threads)))
+             ((and (symbolp it) clauses)
+              (let ((var it)
+                    (val (pop clauses)))
+                (push (list 'let `((,var ,val))) threads)))
+             (t (push (list 'progn it) threads)))))
+    (reduce (lambda (acc next)
+              (setf (cdr (last next)) (list acc))
+              next)
+            threads)))
+
+;; inspired by ron garret's ergolib
+(defmacro bb (&body clauses)
+  (%bb-thread-clauses clauses))
+
 (defun alist-get (sym alist &key (test 'eq))
   (cdr (assoc sym alist :test test)))
 
@@ -229,19 +258,11 @@ call it 'var' for every variable will have one.
                   `(or ,(lookup-in (second ty))
                        ,(lookup-in (third ty))))
                  (t (error "resolve internal error")))))
-      (cond
-        ((typep ref-ty '-var)
-         (lookup-in ref-ty))
-        ((typep ref-ty '-obj)
-         (lookup-in ref-ty))
-        ((typep ref-ty '-prop)
-         (lookup-in ref-ty))
-        ((typep ref-ty '-or)
+      (typecase ref-ty
+        ((or -var -obj -prop -or)
          (lookup-in ref-ty))
         ;; can't resolve
-        (t ty)))))
-
-
+        (otherwise ty)))))
 
 (defmethod expand-or-type ((ty -or) env)
   (let (expanded)
@@ -260,23 +281,24 @@ call it 'var' for every variable will have one.
   (labels ((ensure-named (it)
              (if (consp it) it))
            (combine1 (a b)
-             (let* ((na (or (car a) (make-type-name)))
-                    (nb (or (car b) (make-type-name)))
-                    (ty (-or na nb)))
+             (bb
+               na (or (car a) (make-type-name))
+               nb (or (car b) (make-type-name))
+               ty (-or na nb)
                (values (cons nil ty) (tfx na (cdr a) nb (cdr b)))))
            (combine (a b &rest more)
              (if more
-                 (multiple-value-bind (ty fx) (combine1 a b)
-                   (multiple-value-bind (ty2 fx2) (apply #'combine ty more)
-                     (values ty2 (combine-effects fx2 fx))))
+                 (bb :mv (ty fx)   (combine1 a b)
+                     :mv (ty2 fx2) (apply #'combine ty more)
+                     (values ty2 (combine-effects fx2 fx))) 
                  (combine1 a b)))
            (teq (a b) (ty-equal a b env)))
     (let ((named-types (remove-duplicates named-list-of-types
                                           :test #'teq :key #'cdr)))
       (if (= 1 (length named-types))
           (values (cdr (first named-types)) nil)
-          (multiple-value-bind (named-ty fx) (apply #'combine named-types)
-            (values (cdr named-ty) fx))))))
+          (bb :mv (named-ty fx) (apply #'combine named-types)
+              (values (cdr named-ty) fx))))))
 
 (defun create-or-type (list-of-types env)
   (create-named-list-of-or-types (mapcar (lambda (it) (cons nil it)) list-of-types)
@@ -287,17 +309,17 @@ call it 'var' for every variable will have one.
     ((symbolp it)
      (lookup-type it env))
     ((eq (car it) 'or)
-     (destructuring-bind (types . effects)
-         (reduce (lambda (acc unparsed)
-                   (multiple-value-bind (ty fx) (parse-type unparsed env)
-                     (let ((name (and (symbolp unparsed) unparsed)))
-                       (cons (cons (cons name ty) (car acc))
-                             (combine-effects fx (cdr acc))))))
-                 (cdr it)
-                 :initial-value (cons nil nil))
-       (multiple-value-bind (ty fx)
-           (create-named-list-of-or-types (reverse types) env)
-         (values ty (combine-effects fx effects)))))
+     (bb
+       :db (types . effects)
+       (reduce (lambda (acc unparsed)
+                 (bb :mv (ty fx) (parse-type unparsed env)
+                     name (and (symbolp unparsed) unparsed)
+                     (cons (cons (cons name ty) (car acc))
+                           (combine-effects fx (cdr acc)))))
+               (cdr it)
+               :initial-value (cons nil nil))
+       :mv (ty fx) (create-named-list-of-or-types (reverse types) env)
+       (values ty (combine-effects fx effects))))
     ((eq (car it) 'quote)
      (-lit (second it)))
     ((eq (car it) 'obj)
@@ -350,14 +372,14 @@ call it 'var' for every variable will have one.
 
 (defun introduce (ty fx env)
   ;; FIXME: rev-lookup-type has horrible performance...
-  (multiple-value-bind (existing-ty name) (rev-lookup-type ty env)
+  (bb :mv (existing-ty name) (rev-lookup-type ty env)
     (if existing-ty
         (values existing-ty name fx)
         (let ((nm (make-type-name)))
           (values ty nm (combine-effects fx (tfx nm ty)))))))
 
 (defmethod  applied-ty (thing env)
-  (multiple-value-bind (ty ty-name side-effects) (ty-of thing env)
+  (bb :mv (ty ty-name side-effects) (ty-of thing env)
     (values ty ty-name (apply-effects env side-effects))))
 
 (defmethod ty-of ((var symbol) env)
@@ -385,53 +407,57 @@ call it 'var' for every variable will have one.
         finally (return-from ty-of (values ty ty-name fx))))
     ;; this should not directly exist in 'user' code
     (refine!
-     (destructuring-bind (var ty-name) (cdr form)
-       (multiple-value-bind (gen-ty gen-ty-name) (ty-of var env)
-         (let* ((nar-ty (alist-get ty-name (env-types env)))
-                (fx (refine gen-ty-name gen-ty nar-ty env)))
-           (values (-empty) nil fx)))))
+     (bb
+       :db (var ty-name) (cdr form)
+       :mv (gen-ty gen-ty-name) (ty-of var env)
+       nar-ty (alist-get ty-name (env-types env))
+       fx (refine gen-ty-name gen-ty nar-ty env)
+       (values (-empty) nil fx)))
     (get
-     (destructuring-bind (obj prop) (cdr form)
-       (multiple-value-bind (_ ty-name fx) (ty-of obj env)
-         (declare (ignore _))
-         (let ((ty (-prop ty-name prop)))
-           (introduce ty fx env)))))
+     (bb
+       :db (obj prop) (cdr form)
+       :mv (_ ty-name fx) (ty-of obj env)
+       ty (-prop ty-name prop)
+       (introduce ty fx env)))
     (type
-     (destructuring-bind (tyname unparsed) (cdr form)
-       (multiple-value-bind (type fx) (parse-type unparsed env)
-         (values (-empty) nil (combine-effects (tfx tyname type) fx)))))
+     (bb
+       :db (tyname unparsed) (cdr form)
+       :mv (type fx) (parse-type unparsed env)
+       (values (-empty) nil (combine-effects (tfx tyname type) fx))))
     (declare
-     (destructuring-bind (varname typename) (cdr form)
-       (let ((name (make-type-name)))
+     (bb :db (varname typename) (cdr form)
+         name (make-type-name)
          (values (-empty) nil
                  (combine-effects
                   (vfx varname name)
-                  (tfx name (-var typename)))))))
+                  (tfx name (-var typename))))))
     (def!
-     (destructuring-bind (varname subform) (cdr form)
-       (multiple-value-bind (ty typename fx) (ty-of subform env)
-         (assert (not (-empty-p ty)))
-         (values (-empty) nil
-                 (combine-effects (vfx varname typename) fx)))))
+     (bb
+       :db (varname subform) (cdr form)
+       :mv (ty typename fx) (ty-of subform env)
+       (assert (not (-empty-p ty)))
+       (values (-empty) nil
+               (combine-effects (vfx varname typename) fx))))
     (def
-     (destructuring-bind (varname subform) (cdr form)
-       (multiple-value-bind (ty type-name fx) (ty-of subform env)
-         (assert (not (-empty-p ty)))
-         (let ((var-type (make-type-name)))
-           (values (-empty) nil
-                   (combine-effects
-                    (vfx varname var-type)
-                    (tfx var-type (-var type-name))
-                    fx)))))))) 
+     (bb
+       :db (varname subform) (cdr form)
+       :mv (ty type-name fx) (ty-of subform env)
+       (assert (not (-empty-p ty)))
+       var-type (make-type-name)
+       (values (-empty) nil
+               (combine-effects
+                (vfx varname var-type)
+                (tfx var-type (-var type-name))
+                fx)))))) 
 
 ;;well, this was buggy!
 (defun combine-new-types (a b env)
   (if (ty-equal a b env)
       (values a (make-effects :types (acons (make-type-name) a nil)))
-      (let* ((an (make-type-name))
-             (bn (make-type-name))
-             (cn (make-type-name))
-             (ty (-or an bn)))
+      (bb an (make-type-name)
+          bn (make-type-name)
+          cn (make-type-name)
+          ty (-or an bn)
         (values ty
                 (make-effects
                  :types (list (cons an a)
@@ -462,6 +488,8 @@ call it 'var' for every variable will have one.
                (values (-empty) nil))))
         (t (values (-empty) nil))))))
 
+;; this is not being used as named at the moment.
+;; (refer to usage)
 (defmethod make-intersection-type :around ((a ty) (b ty) env)
   (if (ty-equal a b env)
       a
@@ -476,12 +504,13 @@ call it 'var' for every variable will have one.
   (error "unimplemented"))
 
 (defmethod make-intersection-type ((gen -or) (nar ty) env)
-  (let* ((ty-a (lookup-type (-or-a gen) env))
-         (ty-b (lookup-type (-or-b gen) env))
-         (a (make-intersection-type ty-a nar env))
-         (b (make-intersection-type ty-b nar env))
-         (no-a (-empty-p a))
-         (no-b (-empty-p b)))
+  (bb
+    ty-a (lookup-type (-or-a gen) env)
+    ty-b (lookup-type (-or-b gen) env)
+    a (make-intersection-type ty-a nar env)
+    b (make-intersection-type ty-b nar env)
+    no-a (-empty-p a)
+    no-b (-empty-p b)
     (cond
       ((and no-a no-b) (values (-empty) nil))
       (no-a (values b nil))
@@ -536,25 +565,24 @@ call it 'var' for every variable will have one.
 
 (defmethod refine (name (gen -or) (narrow ty) env)
   ;; incomplete: multi-valued ors
-  (let* ((ty-a (lookup-type (-or-a gen) env))
-         (ty-b (lookup-type (-or-b gen) env))
-         (a? (refineable? ty-a narrow env))
-         (b? (refineable? ty-b narrow env)))
+  (bb
+    ty-a (lookup-type (-or-a gen) env)
+    ty-b (lookup-type (-or-b gen) env)
+    a? (refineable? ty-a narrow env)
+    b? (refineable? ty-b narrow env)
     (if (and a? b?)
-        (multiple-value-bind (a-type a-fx)
-            (make-intersection-type ty-a narrow env)
-          (multiple-value-bind (b-type b-fx)
-              (make-intersection-type ty-b narrow env)
-            (combine-effects a-fx b-fx
-                             (combine-new-types a-type b-type env))))
+        (bb :mv (a-type a-fx) (make-intersection-type ty-a narrow env)
+            :mv (b-type b-fx) (make-intersection-type ty-b narrow env)
+            new-fx (combine-new-types a-type b-type env)
+            (combine-effects a-fx b-fx new-fx))
         (if a?
-            (multiple-value-bind (a-type a-fx)
+            (bb :mv (a-type a-fx)
                 (make-intersection-type ty-a narrow env)
-              (combine-effects (tfx name a-type) a-fx))
+                (combine-effects (tfx name a-type) a-fx))
             (if b?
-                (multiple-value-bind (b-type b-fx)
+                (bb :mv (b-type b-fx)
                     (make-intersection-type ty-b narrow env)
-                  (combine-effects (tfx name b-type) b-fx))
+                    (combine-effects (tfx name b-type) b-fx))
                 (combine-effects
                  (tfx name (-empty))
                  (efx (format nil "Cannot refine ~A to ~A" gen narrow))))))))
