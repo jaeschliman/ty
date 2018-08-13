@@ -16,8 +16,16 @@
                 (declare (ignore ty-name env))
                 ty))))
 
+(defun resolved-ty-equalp (a b)
+  (when (eq (type-of a) (type-of b))
+    (typecase a
+      (list
+       (and (= (length a) (length b))
+            (null (set-difference a b :test 'equalp))))
+      (t (equalp a b)))))
+
 (defun ty-assert (resolved-ty expr &optional (env *base-env*))
-  (is (equalp resolved-ty
+  (is (resolved-ty-equalp resolved-ty
               (multiple-value-bind
                     (ty ty-name env) (applied-ty expr env)
                 (declare (ignore ty-name))
@@ -26,7 +34,7 @@
                 (resolve ty env)))))
 
 (defun -ty-assert (resolved-ty expr &optional (env *base-env*))
-  (equalp resolved-ty
+  (resolved-ty-equalp resolved-ty
           (multiple-value-bind
                 (ty ty-name env) (applied-ty expr env)
             (declare (ignore ty-name))
@@ -538,10 +546,16 @@
     (is (test-or-type-creation (-lit 'a) (-lit 'b) (-lit 'c) (-lit 'd)))
 
     (is (test-or-type-creation (-lit 'a) (-lit 'b) (-lit 'a) (-lit 'b)))
-    (is (test-or-type-creation (-lit 'a) (-lit 'a)))))
+    (is (test-or-type-creation (-lit 'a) (-lit 'a)))
+    )
+  )
 
 
 (run! 'initial-inferences)
+
+(chk '(do
+       (type null 'null)
+       (type cons (obj car ()))))
 
 (chk '(do
        (type foo 'foo)

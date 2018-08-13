@@ -242,19 +242,6 @@ call it 'var' for every variable will have one.
         (t ty)))))
 
 
-(defun parse-type (it)
-  (cond
-    ((symbolp it) it)
-    ((eq (car it) 'or)
-     (-or (second it) (third it)))
-    ((eq (car it) 'quote)
-     (-lit (second it)))
-    ((eq (car it) 'obj)
-     (-obj 
-      (plist-alist (cdr it))))
-    ((eq (car it) 'prop)
-     (-prop (second it) (third it)))
-    (t (error "unimplemented"))))
 
 (defmethod expand-or-type ((ty -or) env)
   (let (expanded)
@@ -269,12 +256,14 @@ call it 'var' for every variable will have one.
       (expand (-or-b ty))
       (remove-duplicates expanded :test #'teq))))
 
-(defun create-or-type (list-of-types env)
-  (labels ((combine1 (a b)
-             (let* ((na (make-type-name))
-                    (nb (make-type-name))
+(defun create-named-list-of-or-types (named-list-of-types env)
+  (labels ((ensure-named (it)
+             (if (consp it) it))
+           (combine1 (a b)
+             (let* ((na (or (car a) (make-type-name)))
+                    (nb (or (car b) (make-type-name)))
                     (ty (-or na nb)))
-               (values ty (tfx na a nb b))))
+               (values (cons nil ty) (tfx na (cdr a) nb (cdr b)))))
            (combine (a b &rest more)
              (if more
                  (multiple-value-bind (ty fx) (combine1 a b)
@@ -282,10 +271,41 @@ call it 'var' for every variable will have one.
                      (values ty2 (combine-effects fx2 fx))))
                  (combine1 a b)))
            (teq (a b) (ty-equal a b env)))
-    (let ((types (remove-duplicates list-of-types :test #'teq)))
-      (if (= 1 (length types))
-          (values (first types) nil)
-          (apply #'combine types)))))
+    (let ((named-types (remove-duplicates named-list-of-types
+                                          :test #'teq :key #'cdr)))
+      (if (= 1 (length named-types))
+          (values (cdr (first named-types)) nil)
+          (multiple-value-bind (named-ty fx) (apply #'combine named-types)
+            (values (cdr named-ty) fx))))))
+
+(defun create-or-type (list-of-types env)
+  (create-named-list-of-or-types (mapcar (lambda (it) (cons nil it)) list-of-types)
+                                 env))
+
+(defun parse-type (it env)
+  (cond
+    ((symbolp it)
+     (lookup-type it env))
+    ((eq (car it) 'or)
+     (destructuring-bind (types . effects)
+         (reduce (lambda (acc unparsed)
+                   (multiple-value-bind (ty fx) (parse-type unparsed env)
+                     (let ((name (and (symbolp unparsed) unparsed)))
+                       (cons (cons (cons name ty) (car acc))
+                             (combine-effects fx (cdr acc))))))
+                 (cdr it)
+                 :initial-value (cons nil nil))
+       (multiple-value-bind (ty fx)
+           (create-named-list-of-or-types (reverse types) env)
+         (values ty (combine-effects fx effects)))))
+    ((eq (car it) 'quote)
+     (-lit (second it)))
+    ((eq (car it) 'obj)
+     (-obj 
+      (plist-alist (cdr it))))
+    ((eq (car it) 'prop)
+     (-prop (second it) (third it)))
+    (t (error "unimplemented"))))
 
 ;;; ---- ty-equal
 
@@ -378,7 +398,8 @@ call it 'var' for every variable will have one.
            (introduce ty fx env)))))
     (type
      (destructuring-bind (tyname unparsed) (cdr form)
-       (values (-empty) nil (tfx tyname (parse-type unparsed)))))
+       (multiple-value-bind (type fx) (parse-type unparsed env)
+         (values (-empty) nil (combine-effects (tfx tyname type) fx)))))
     (declare
      (destructuring-bind (varname typename) (cdr form)
        (let ((name (make-type-name)))
