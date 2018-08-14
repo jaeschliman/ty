@@ -615,6 +615,7 @@
   (replace-1s (copy-tree template)))
 
 (test recursive-types-0
+  (setf *print-circle* t)
 
   (bb a (circ `(or ,(-lit 'a) :1))
       b (circ `(or ,(-lit 'a) :1))
@@ -657,29 +658,18 @@
                x)
              *recursive-cons-type-env)
 
-  ;; FIXME: flatten nested ors?
-  (ty-assert (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1)))
-             '(do
-               (type obj-or-foo (or foo obj-or-bar))
-               (type obj-or-bar (or bar obj-or-foo))
-               (declare x obj-or-bar)
-               x)
-             *recursive-cons-type-env)
-
-  ;; FIXME: this test should pass
-  (ty-assert-safe (circ `(or ,(-lit 'bar) ,(-lit 'foo) :1))
+  (ty-assert (circ `(or ,(-lit 'bar) ,(-lit 'foo) :1))
                   '(do
                     (type obj-or-foo (or foo obj-or-bar))
                     (type obj-or-bar (or bar obj-or-foo))
                     (declare x obj-or-bar)
                     x)
-                  *recursive-cons-type-env)
-  )
+                  *recursive-cons-type-env))
 
-(run! 'recursive-types-0)
+;; (run! 'recursive-types-0)
 (run! 'initial-inferences)
 
-;; #1=(OR [LIT BAR] (OR [LIT FOO] #1#))
+;; #1=(OR [LIT BAR] [LIT FOO] #1#)
 (chk '(do
        (type obj-or-foo (or foo obj-or-bar))
        (type obj-or-bar (or bar obj-or-foo))

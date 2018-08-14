@@ -91,31 +91,43 @@
     (or (cont repr))
     (obj (cont repr))))
 
-(def-resolver ((ty -or))
-  (bb result (list 'or)
-      acc nil
-      (forward-ref result)
-      (enqueue (resolve-> (-or-a ty) a
-                (push a acc)
-                (enqueue (resolve->
-                          (-or-b ty) b
-                          (push b acc)
-                          (setf (cdr result) (reverse acc))
-                          (enqueue (cont result))))))))
-
-(defun resolved-flattened-or-members (or)
+(defun resolved-flattened-or-members (or &optional existing &key preserve-empty)
+  ;; preserve empty for partially-resolved results
   (bb
-    seen nil
+    seen existing
     (labels
         ((recur (or)
            (let (result)
              (dolist (it (cdr or) result)
                (if (and (listp it) (eq (car it) 'or))
-                   (unless (member it seen :test 'eq)
-                     (push it seen)
-                     (setf result (append (recur it) result)))
+                   (if (member it seen :test 'eq)
+                       (push it result)
+                       (progn
+                         (push it seen)
+                         (if (and (null (cdr it)) preserve-empty)
+                             (push it result)
+                             (setf result (append (recur it) result)))))
                    (push it result))))))
       (reverse (recur or)))))
+
+(def-resolver ((ty -or))
+  (bb result (list 'or)
+      acc nil
+      (forward-ref result)
+      (enqueue (resolve->
+                (-or-a ty) a
+                (push a acc)
+                (enqueue (resolve->
+                          (-or-b ty) b
+                          (push b acc)
+                          (bb members (reverse acc)
+                              (setf (cdr result) members)
+                              (setf (cdr result)
+                                    (resolved-flattened-or-members (list* 'or members)
+                                                                   (list result)
+                                                                   :preserve-empty t)))
+                          (enqueue (cont result))))))))
+
 
 (def-resolver ((ty -prop))
   (let ((prop-name (-prop-prop ty))
