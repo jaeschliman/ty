@@ -1,4 +1,5 @@
 (in-package :ty)
+(setf *print-circle* t)
 
 (def-suite initial-inferences)
 (in-suite initial-inferences)
@@ -25,35 +26,56 @@
                 (eq (cdr a) (cdr b))))
          (compared? (a b)
            (member (cons a b) seen :test #'car-cdr-eq))
+         (row-equal (a b)
+           (and (eq (car a) (car b))
+                (ty-equalp (cdr a) (cdr b))))
          (ty-equalp (a b)
            (when (eq (type-of a) (type-of b))
              (typecase a
-               (cons
+               (list
                 (when (eq (car a) (car b))
                   (if (compared? a b)
+                      ;; I'm too tired to figure out if this is correct lol
                       (progn
-                        ;; I'm too tired to figure out if this is correct lol
+                        ;; (format t "compared.")
                         t)
                       (progn
                         (push (cons a b) seen)
                         (ecase (car a)
-                          (or  (unordered-list-equal (cdr a) (cdr b) :test #'ty-equalp))
-                          (obj (flet ((row-equal (a b)
-                                        (and (eq (car a) (car b))
-                                             (ty-equalp (cdr a) (cdr b)))))
-                                 (unordered-list-equal (second a) (second b)
-                                                       :test #'row-equal))))))))
+                          (or  (unordered-list-equal (cdr a) (cdr b)
+                                                     :test #'ty-equalp))
+                          (obj (unordered-list-equal (second a) (second b)
+                                                     :test #'row-equal)))))))
                (t (equalp a b))))))
       (ty-equalp a b))))
 
 (defun ty-assert (resolved-ty expr &optional (env *base-env*))
   (is (resolved-ty-equalp resolved-ty
-              (multiple-value-bind
-                    (ty ty-name env) (applied-ty expr env)
-                (declare (ignore ty-name))
-                ;; (pprint env)
-                ;;(values ty ":" (resolve ty env))
-                (concretize ty env)))))
+                          (multiple-value-bind
+                                (ty ty-name env) (applied-ty expr env)
+                            (declare (ignore ty-name))
+                            ;; (pprint env)
+                            ;;(values ty ":" (resolve ty env))
+                            (concretize ty env)))))
+
+(defun ty-assert-safe (resolved-ty expr &optional (env *base-env*))
+  ;; the not not is to keep 5am from barfing on circular structures
+  (is (not (not (resolved-ty-equalp resolved-ty
+                                    (multiple-value-bind
+                                          (ty ty-name env) (applied-ty expr env)
+                                      (declare (ignore ty-name))
+                                      ;; (pprint env)
+                                      ;;(values ty ":" (resolve ty env))
+                                      (concretize ty env)))))))
+
+(defun ty-assert-not (resolved-ty expr &optional (env *base-env*))
+  (is (not (resolved-ty-equalp resolved-ty
+                               (multiple-value-bind
+                                     (ty ty-name env) (applied-ty expr env)
+                                 (declare (ignore ty-name))
+                                 ;; (pprint env)
+                                 ;;(values ty ":" (resolve ty env))
+                                 (concretize ty env))))))
 
 (defun -ty-assert (resolved-ty expr &optional (env *base-env*))
   (resolved-ty-equalp resolved-ty
@@ -576,11 +598,9 @@
 (defparameter *recursive-cons-type-env
   (envq :types ((null (-lit 'null))
                 (next-type (-or 'intlist 'null))
-                (intlist (-objq (values int) (next next-type))))))
-(chk '(do
-       (declare x null)
-       x)
-     *recursive-cons-type-env)
+                (intlist (-objq (values int) (next next-type)))
+                (foo (-lit 'foo))
+                (bar (-lit 'bar)))))
 
 (defun replace-1s (self)
   (labels ((walk (list)
@@ -592,36 +612,80 @@
     self))
 
 (defun circ (template)
-  (replace-1s (copy-list template)))
+  (replace-1s (copy-tree template)))
 
 (test recursive-types-0
+
+  (bb a (circ `(or ,(-lit 'a) :1))
+      b (circ `(or ,(-lit 'a) :1))
+      (is (resolved-ty-equalp a b)))
+
+  (bb a  (circ `(obj ((values . ,(-int))
+                      (next . (or :1 ,(-lit 'null))))))
+      b  (circ `(obj ((values . ,(-int))
+                      (next . (or :1 ,(-lit 'null))))))
+      (is (resolved-ty-equalp a b)))
+  (bb
+    a (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1)))
+    b (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1)))
+    (is (resolved-ty-equalp a b)))
+
+  (bb
+    a (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1)))
+    b (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1)))
+    (is (resolved-ty-equalp a b)))
+
+  (is (not (resolved-ty-equalp
+            (circ `(or ,(-lit 'bar) (or (-lit 'foo) :1)))
+            (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1))))))
+
+  (is (resolved-ty-equalp
+       (circ `(or ,(-lit 'bar) ,(-lit 'foo) :1))
+       (circ `(or ,(-lit 'bar) ,(-lit 'foo) :1))))
+  
   (ty-assert (circ `(obj ((values . ,(-int))
                           (next . (or :1 ,(-lit 'null))))))
              '(do
                (declare x intlist)
                x)
              *recursive-cons-type-env)
+
   (ty-assert (circ `(obj ((next . (or :1 ,(-lit 'null)))
                           (values . ,(-int)))))
              '(do
                (declare x intlist)
                x)
              *recursive-cons-type-env)
+
+  ;; FIXME: flatten nested ors?
+  (ty-assert (circ `(or ,(-lit 'bar) (or ,(-lit 'foo) :1)))
+             '(do
+               (type obj-or-foo (or foo obj-or-bar))
+               (type obj-or-bar (or bar obj-or-foo))
+               (declare x obj-or-bar)
+               x)
+             *recursive-cons-type-env)
+
+  ;; FIXME: this test should pass
+  (ty-assert-safe (circ `(or ,(-lit 'bar) ,(-lit 'foo) :1))
+                  '(do
+                    (type obj-or-foo (or foo obj-or-bar))
+                    (type obj-or-bar (or bar obj-or-foo))
+                    (declare x obj-or-bar)
+                    x)
+                  *recursive-cons-type-env)
   )
 
-;; (run! 'recursive-types-0)
+(run! 'recursive-types-0)
 (run! 'initial-inferences)
 
-(resolved-ty-equalp
- (circ `(or ,(-lit 'a) :1))
- (circ `(or ,(-lit 'a) :1)))
-
-(print
- (resolved-ty-equalp
-  (circ `(obj ((values . ,(-int))
-               (next . (or :1 ,(-lit 'null))))))
-  (circ `(obj ((values . ,(-int))
-               (next . (or :1 ,(-lit 'null))))))))
+;; #1=(OR [LIT BAR] (OR [LIT FOO] #1#))
+(chk '(do
+       (type obj-or-foo (or foo obj-or-bar))
+       (type obj-or-bar (or bar obj-or-foo))
+       (declare x obj-or-bar)
+       x) 
+     *recursive-cons-type-env)
 
 (chk '(do
        (declare x intlist)
