@@ -253,6 +253,7 @@ call it 'var' for every variable will have one.
 
 
 (defvar *current-resolutions* nil)
+(defvar *currently-resolving-name* nil)
 (defvar *active-resolutions* nil)
 (defvar *resolution-queue* nil)
 
@@ -285,6 +286,8 @@ call it 'var' for every variable will have one.
   (bb
     rows (-obj-rows ty)
     acc nil
+    result (list 'obj nil)
+    (push (cons *currently-resolving-name* result) *current-resolutions*)
     (labels ((recur ()
                (resolve-enqueue
                  (if-let (next (pop rows))
@@ -294,24 +297,27 @@ call it 'var' for every variable will have one.
                                   (push (cons key ty) acc)
                                   (recur))))
                    (progn
-                     (funcall cont (list 'obj (reverse acc))))))))
+                     (setf (second result) (reverse acc))
+                     (funcall cont result)
+                     ;(funcall cont (list 'obj (reverse acc)))
+                     )))))
       (recur))))
 
 (defmethod resolve ((name symbol) (env env) cont)
-  (if-let (resolved (alist-get name *current-resolutions*))
-    (funcall cont resolved)
-    (if (member name *active-resolutions*)
-        ;; Yield somehow?
-        (resolve-enqueue
-          (sleep 0.01)
-          (resolve name env cont))
-        (progn
-          (push name *active-resolutions*)
-          (resolve (alist-get name (env-types env)) env
-                   (fn (found)
-                     (push (cons name found) *current-resolutions*)
-                     (setf *active-resolutions* (delete name *active-resolutions*))
-                     (funcall cont found)))))))
+  (let ((*currently-resolving-name* name))
+    (if-let (resolved (alist-get name *current-resolutions*))
+      (funcall cont resolved)
+      (if (member name *active-resolutions*)
+          ;; Yield somehow?
+          (assert nil)
+          (bb
+            lookup (alist-get name (env-types env))
+            (push name *active-resolutions*)
+            (resolve lookup env
+                     (fn (found)
+                       (push (cons name found) *current-resolutions*)
+                       (setf *active-resolutions* (delete name *active-resolutions*))
+                       (funcall cont found))))))))
 
 (defmethod resolve ((repr list) (env env) cont)
   (ecase (car repr) ;; should already be resolved...
@@ -320,6 +326,7 @@ call it 'var' for every variable will have one.
 
 (defmethod resolve ((ty -or) (env env) cont)
   (bb result (list 'or nil nil)
+      (push (cons *currently-resolving-name* result) *current-resolutions*)
       (resolve-enqueue
         (resolve
          (-or-a ty) env

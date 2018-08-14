@@ -18,17 +18,33 @@
                 ty))))
 
 (defun resolved-ty-equalp (a b)
-  (when (eq (type-of a) (type-of b))
-    (typecase a
-      (list
-       (when (eq (car a) (car b))
-         (ecase (car a)
-           (or  (unordered-list-equal (cdr a) (cdr b) :test 'resolved-ty-equalp))
-           (obj (flet ((row-equal (a b)
-                         (and (eq (car a) (car b))
-                              (resolved-ty-equal (cdr a) (cdr b)))))
-                  (unordered-list-equal (second a) (second b)))))))
-      (t (equalp a b)))))
+  (let (seen)
+    (labels
+        ((car-cdr-eq (a b)
+           (and (eq (car a) (car b))
+                (eq (cdr a) (cdr b))))
+         (compared? (a b)
+           (member (cons a b) seen :test #'car-cdr-eq))
+         (ty-equalp (a b)
+           (when (eq (type-of a) (type-of b))
+             (typecase a
+               (cons
+                (when (eq (car a) (car b))
+                  (if (compared? a b)
+                      (progn
+                        ;; I'm too tired to figure out if this is correct lol
+                        t)
+                      (progn
+                        (push (cons a b) seen)
+                        (ecase (car a)
+                          (or  (unordered-list-equal (cdr a) (cdr b) :test #'ty-equalp))
+                          (obj (flet ((row-equal (a b)
+                                        (and (eq (car a) (car b))
+                                             (ty-equalp (cdr a) (cdr b)))))
+                                 (unordered-list-equal (second a) (second b)
+                                                       :test #'row-equal))))))))
+               (t (equalp a b))))))
+      (ty-equalp a b))))
 
 (defun ty-assert (resolved-ty expr &optional (env *base-env*))
   (is (resolved-ty-equalp resolved-ty
@@ -557,15 +573,58 @@
     )
   )
 
-
-(run! 'initial-inferences)
-
 (defparameter *recursive-cons-type-env
   (envq :types ((null (-lit 'null))
                 (next-type (-or 'intlist 'null))
                 (intlist (-objq (values int) (next next-type))))))
 (chk '(do
        (declare x null)
+       x)
+     *recursive-cons-type-env)
+
+(defun replace-1s (self)
+  (labels ((walk (list)
+             (loop for cons on list do
+                  (when (listp (car cons)) (walk (car cons)))
+                  (when (eq (car cons) :1) (setf (car cons) self))
+                  (when (eq (cdr cons) :1) (setf (cdr cons) self)))))
+    (walk self)
+    self))
+
+(defun circ (template)
+  (replace-1s (copy-list template)))
+
+(test recursive-types-0
+  (ty-assert (circ `(obj ((values . ,(-int))
+                          (next . (or :1 ,(-lit 'null))))))
+             '(do
+               (declare x intlist)
+               x)
+             *recursive-cons-type-env)
+  (ty-assert (circ `(obj ((next . (or :1 ,(-lit 'null)))
+                          (values . ,(-int)))))
+             '(do
+               (declare x intlist)
+               x)
+             *recursive-cons-type-env)
+  )
+
+;; (run! 'recursive-types-0)
+(run! 'initial-inferences)
+
+(resolved-ty-equalp
+ (circ `(or ,(-lit 'a) :1))
+ (circ `(or ,(-lit 'a) :1)))
+
+(print
+ (resolved-ty-equalp
+  (circ `(obj ((values . ,(-int))
+               (next . (or :1 ,(-lit 'null))))))
+  (circ `(obj ((values . ,(-int))
+               (next . (or :1 ,(-lit 'null))))))))
+
+(chk '(do
+       (declare x intlist)
        x)
      *recursive-cons-type-env)
 
@@ -591,10 +650,7 @@
         x
         ))
 
-(chk '(do
-       (declare x intlist)
-       x)
-     *recursive-cons-type-env)
+
 
 (chk '(do
        (declare x intlist)
