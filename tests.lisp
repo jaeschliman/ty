@@ -4,7 +4,8 @@
 (in-suite initial-inferences)
 
 (defmacro print-values (form)
-  `(print (multiple-value-list ,form)))
+  `(let ((*print-circle* t))
+    (print (multiple-value-list ,form))))
 
 (defmacro ty-full-assert (type name effects form &body env)
   `(is (equalp (list ,type ,name ,effects) (multiple-value-list (ty-of ,form ,@env)))))
@@ -20,8 +21,13 @@
   (when (eq (type-of a) (type-of b))
     (typecase a
       (list
-       (and (= (length a) (length b))
-            (null (set-difference a b :test 'equalp))))
+       (when (eq (car a) (car b))
+         (ecase (car a)
+           (or  (unordered-list-equal (cdr a) (cdr b) :test 'resolved-ty-equalp))
+           (obj (flet ((row-equal (a b)
+                         (and (eq (car a) (car b))
+                              (resolved-ty-equal (cdr a) (cdr b)))))
+                  (unordered-list-equal (second a) (second b)))))))
       (t (equalp a b)))))
 
 (defun ty-assert (resolved-ty expr &optional (env *base-env*))
@@ -31,7 +37,7 @@
                 (declare (ignore ty-name))
                 ;; (pprint env)
                 ;;(values ty ":" (resolve ty env))
-                (resolve ty env)))))
+                (concretize ty env)))))
 
 (defun -ty-assert (resolved-ty expr &optional (env *base-env*))
   (resolved-ty-equalp resolved-ty
@@ -40,7 +46,7 @@
             (declare (ignore ty-name))
             ;; (pprint env)
             ;;(values ty ":" (resolve ty env))
-            (resolve ty env))))
+            (concretize ty env))))
 
 (defmacro envq (&key vars types)
   (flet ((list->qalist (list)
@@ -84,7 +90,8 @@
 
   (ty-assert (-int) 5)
 
-  (ty-assert (-objq (a int)) 'x
+  (ty-assert `(obj ((a . ,(-int))))
+             'x
              (envq :vars ((x 'x))
                    :types ((x (-objq (a int))))))
 
@@ -207,7 +214,7 @@
          (ty ty-name env) (applied-ty expr env)
      (declare (ignore ty-name))
      ;; (pprint env)
-     (values ty ":" (resolve ty env)))))
+     (concretize ty env))))
 
 (defun chk2 (expr &optional (env *base-env*))
   (print-values
@@ -553,9 +560,46 @@
 
 (run! 'initial-inferences)
 
+(defparameter *recursive-cons-type-env
+  (envq :types ((null (-lit 'null))
+                (next-type (-or 'intlist 'null))
+                (intlist (-objq (values int) (next next-type))))))
 (chk '(do
-       (type null 'null)
-       (type cons (obj car ()))))
+       (declare x null)
+       x)
+     *recursive-cons-type-env)
+
+(chk '(do
+       (type foo (or 'a 'b))
+       (declare x foo)
+       x))
+
+(chk '(do
+       (type foo (or 'a 'b))
+       (declare x foo)
+       x))
+
+(chk '(do
+        (type foo 'foo)
+        (type bar 'bar)
+        (type data-foo 'data-foo)
+        (type data-bar 'data-bar)
+        (type a (obj type foo data data-foo))
+        (type b (obj type bar data data-bar))
+        (type c (or a b))
+        (declare x a)
+        x
+        ))
+
+(chk '(do
+       (declare x intlist)
+       x)
+     *recursive-cons-type-env)
+
+(chk '(do
+       (declare x intlist)
+       x)
+     *recursive-cons-type-env)
 
 (chk '(do
        (type foo 'foo)

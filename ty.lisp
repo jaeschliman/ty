@@ -49,6 +49,10 @@
 (defun rev-alist-get (value alist &key (test 'equalp))
   (car (rev-assoc value alist :test test)))
 
+(defun unordered-list-equal (a b &key (test 'equalp))
+  (and (= (length a) (length b))
+       (null (set-difference a b :test test))))
+
 (defstruct (ty (:constructor nil)) name)
 (defmethod print-object ((self ty) stream)
   (format stream "[~A]" (ty-name self)))
@@ -116,6 +120,33 @@ a should now be y, but b should retain x | y
 so I guess that means we need to intro for every 'complex' function type...
 or maybe just always? yeesh
 anyway...
+
+|#
+
+#|
+
+;; self-referential/recursive types?
+(type intlist (obj value int next (or intlist null)))
+
+;; difficulty here will be that `or` eagerly evaluates its types...
+;; and what about mutually recursive types?
+
+;; could have the `lookup` of an unkown type return a special new
+;; type `unknown` that is never ty-equal to any other type,
+;; since the eager evaluation of `or` is to simplify the form, this
+;; could work. it would, however, introduce the possibility that
+;; that an or could contain duplicate types... although this should
+;; be alleviated when it is again expanded later on...
+;; seems like like a good solution at first glance.
+
+;; and what about `resolve`ing them lol
+
+;; also eventually, parameterized types:
+(type (listof x) (obj value x next (or (listof x) null)))
+
+;; also, what about resolving objects, haha
+;; ....and.... comparing them!
+;; object time.
 
 |#
 
@@ -215,54 +246,122 @@ call it 'var' for every variable will have one.
        :types (effects-types fx)
        :errors (effects-errors fx))))
 
+;; --- resolve
 ;; for debugging?
 ;; but can't resolve an or type, because it uses refs >.<
 ;; introduce yet another representation for a resolved type?
-(defmethod resolve ((null null) (env env))
+
+
+(defvar *current-resolutions* nil)
+(defvar *active-resolutions* nil)
+(defvar *resolution-queue* nil)
+
+(defmacro resolve-enqueue (&body body)
+  `(let ((thunk (lambda () ,@body)))
+     (if *resolution-queue*
+         (setf (cdr (last *resolution-queue*)) (list thunk))
+         (push thunk *resolution-queue*))))
+
+(defmacro fn (args &body body) `(lambda ,args ,@body))
+
+(defun concretize (ty env)
+  (let ((*current-resolutions* nil)
+        (*resolution-queue* nil)
+        (*active-resolutions* nil))
+    (resolve ty env (fn (result) (return-from concretize result)))
+    (loop for thunk = (pop *resolution-queue*) while thunk
+       do (funcall thunk))))
+
+(defmethod resolve ((null null) (env env) cont)
   (assert nil))
-(defmethod resolve ((ty ty) (env env))
-  ty)
-(defmethod resolve ((ty -var) (env env))
-  (resolve (-var-ref ty) env))
 
-(defmethod resolve ((name symbol) (env env))
-  (resolve (alist-get name (env-types env)) env))
+(defmethod resolve ((ty ty) (env env) cont)
+  (resolve-enqueue (funcall cont ty)))
 
-(defmethod resolve ((repr list) (env env))
-  (ecase (car repr)
-    (or repr))) ;; should already be resolved...
+(defmethod resolve ((ty -var) (env env) cont)
+  (resolve-enqueue (resolve (-var-ref ty) env cont)))
 
-(defmethod resolve ((ty -or) (env env))
-  `(or ,(resolve (-or-a ty) env)
-       ,(resolve (-or-b ty) env)))
+(defmethod resolve ((ty -obj) (env env) cont)
+  (bb
+    rows (-obj-rows ty)
+    acc nil
+    (labels ((recur ()
+               (resolve-enqueue
+                 (if-let (next (pop rows))
+                   (bb :db (key . tyname) next
+                       (resolve tyname env
+                                (fn (ty)
+                                  (push (cons key ty) acc)
+                                  (recur))))
+                   (progn
+                     (funcall cont (list 'obj (reverse acc))))))))
+      (recur))))
 
-(defmethod resolve ((ty -prop) (env env))
+(defmethod resolve ((name symbol) (env env) cont)
+  (if-let (resolved (alist-get name *current-resolutions*))
+    (funcall cont resolved)
+    (if (member name *active-resolutions*)
+        ;; Yield somehow?
+        (resolve-enqueue
+          (sleep 0.01)
+          (resolve name env cont))
+        (progn
+          (push name *active-resolutions*)
+          (resolve (alist-get name (env-types env)) env
+                   (fn (found)
+                     (push (cons name found) *current-resolutions*)
+                     (setf *active-resolutions* (delete name *active-resolutions*))
+                     (funcall cont found)))))))
+
+(defmethod resolve ((repr list) (env env) cont)
+  (ecase (car repr) ;; should already be resolved...
+    (or (funcall cont repr))
+    (obj (funcall cont repr))))
+
+(defmethod resolve ((ty -or) (env env) cont)
+  (bb result (list 'or nil nil)
+      (resolve-enqueue
+        (resolve
+         (-or-a ty) env
+         (fn (a)
+           (setf (second result) a)
+           (resolve-enqueue
+             (resolve (-or-b ty) env
+                      (fn (b)
+                        (setf (third  result) b)
+                        (resolve-enqueue (funcall cont result))))))))))
+
+(defun resolved-flattened-or-members (or)
+  (labels
+      ((recur (or)
+         (let (result)
+           (dolist (it (cdr or) result)
+             (if (and (listp it) (eq (car it) 'or))
+                 (setf result (append (recur it) result))
+                 (push it result))))))
+    (reverse (recur or))))
+
+(defmethod resolve ((ty -prop) (env env) cont)
   (let ((prop-name (-prop-prop ty))
         (ref-ty (alist-get (-prop-ty ty) (env-types env))))
-    (labels ((lookup-in (ty)
-               (typecase ty
-                 (-obj
-                  (let ((prop-type (alist-get prop-name (-obj-rows ty))))
-                    (assert prop-type)
-                    (resolve prop-type env)))
-                 (-or
-                  `(or
-                    ,(lookup-in (resolve (-or-a ty) env))
-                    ,(lookup-in (resolve (-or-b ty) env))))
-                 (-var
-                  (lookup-in (resolve ty env)))
-                 (-prop
-                  (lookup-in (resolve ty env)))
-                 (list
-                  (assert (eq (car ty) 'or))
-                  `(or ,(lookup-in (second ty))
-                       ,(lookup-in (third ty))))
-                 (t (error "resolve internal error")))))
-      (typecase ref-ty
-        ((or -var -obj -prop -or)
-         (lookup-in ref-ty))
-        ;; can't resolve
-        (otherwise ty)))))
+    (flet ((get-prop (from)
+             (if (and (listp from)
+                      (eq (car from) 'obj))
+                 (alist-get prop-name (second from))
+                 (-empty))))
+      (resolve ref-ty env
+               (fn (rez)
+                 (etypecase rez
+                   (-empty (funcall cont rez))
+                   (list
+                    (ecase (car rez)
+                      (or
+                       (bb tys (resolved-flattened-or-members rez)
+                           (funcall cont (cons 'or (mapcar #'get-prop tys)))))
+                      (obj
+                       (funcall cont (get-prop rez)))))))))))
+
+;;; --- or types
 
 (defmethod expand-or-type ((ty -or) env)
   (let (expanded)
@@ -279,7 +378,7 @@ call it 'var' for every variable will have one.
 
 (defun create-named-list-of-or-types (named-list-of-types env)
   (labels ((ensure-named (it)
-             (if (consp it) it))
+             (if (consp it) it (cons nil it)))
            (combine1 (a b)
              (bb
                na (or (car a) (make-type-name))
@@ -308,25 +407,23 @@ call it 'var' for every variable will have one.
   (cond
     ((symbolp it)
      (lookup-type it env))
-    ((eq (car it) 'or)
-     (bb
-       :db (types . effects)
-       (reduce (lambda (acc unparsed)
-                 (bb :mv (ty fx) (parse-type unparsed env)
-                     name (and (symbolp unparsed) unparsed)
-                     (cons (cons (cons name ty) (car acc))
-                           (combine-effects fx (cdr acc)))))
-               (cdr it)
-               :initial-value (cons nil nil))
-       :mv (ty fx) (create-named-list-of-or-types (reverse types) env)
-       (values ty (combine-effects fx effects))))
-    ((eq (car it) 'quote)
-     (-lit (second it)))
-    ((eq (car it) 'obj)
-     (-obj 
-      (plist-alist (cdr it))))
-    ((eq (car it) 'prop)
-     (-prop (second it) (third it)))
+    ((listp it)
+     (ecase (car it)
+       (or
+        (bb
+          :db (types . effects)
+          (reduce (lambda (acc unparsed)
+                    (bb :mv (ty fx) (parse-type unparsed env)
+                        name (and (symbolp unparsed) unparsed)
+                        (cons (cons (cons name ty) (car acc))
+                              (combine-effects fx (cdr acc)))))
+                  (cdr it)
+                  :initial-value (cons nil nil))
+          :mv (ty fx) (create-named-list-of-or-types (reverse types) env)
+          (values ty (combine-effects fx effects))))
+       (quote (-lit (second it)))
+       (obj (-obj (plist-alist (cdr it))))
+       (prop (-prop (second it) (third it)))))
     (t (error "unimplemented"))))
 
 ;;; ---- ty-equal
@@ -348,13 +445,20 @@ call it 'var' for every variable will have one.
 
 (defun expanded-or-types-equal (exp-a exp-b env)
   (flet ((teq (a b) (ty-equal a b env)))
-    (and (= (length exp-a) (length exp-b))
-         (null (set-difference exp-a exp-b :test #'teq)))))
+    (unordered-list-equal exp-a exp-b :test #'teq)))
 
 (defmethod ty-equal ((a -or) (b -or) env)
   (let* ((exp-a (expand-or-type a env))
          (exp-b (expand-or-type b env)))
     (expanded-or-types-equal exp-a exp-b env)))
+
+(defmethod ty-equal ((a -obj) (b -obj) env)
+  (flet ((row-equal (a b)
+           (and (eq (car a) (car b))
+                (ty-equal (lookup-type (cdr a) env)
+                          (lookup-type (cdr b) env)
+                          env))))
+    (unordered-list-equal (-obj-rows a) (-obj-rows b) :test #'row-equal)))
 
 ;;; ---- ty-of
 ;; ty-of applies to code in the env, returns 3 values,
