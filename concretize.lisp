@@ -16,7 +16,6 @@
          (setf (cdr (last *resolution-queue*)) (list thunk))
          (push thunk *resolution-queue*))))
 
-(defmacro fn (args &body body) `(lambda ,args ,@body))
 
 (defun concretize (ty env)
   (let ((*current-resolutions* nil)
@@ -111,22 +110,24 @@
       (reverse (recur or)))))
 
 (def-resolver ((ty -or))
-  (bb result (list 'or)
-      acc nil
-      (forward-ref result)
-      (enqueue (resolve->
-                (-or-a ty) a
-                (push a acc)
-                (enqueue (resolve->
-                          (-or-b ty) b
-                          (push b acc)
-                          (bb members (reverse acc)
-                              (setf (cdr result) members)
-                              (setf (cdr result)
-                                    (resolved-flattened-or-members (list* 'or members)
-                                                                   (list result)
-                                                                   :preserve-empty t)))
-                          (enqueue (cont result))))))))
+  (bb
+    result (list 'or)
+    acc nil
+    (forward-ref result)
+    (enqueue (resolve->
+              (-or-a ty) a
+              (push a acc)
+              (enqueue (resolve->
+                        (-or-b ty) b
+                        (push b acc)
+                        (bb
+                          members (reverse acc)
+                          (setf (cdr result) members)
+                          (setf (cdr result)
+                                (resolved-flattened-or-members (list* 'or members)
+                                                               (list result)
+                                                               :preserve-empty t)))
+                        (enqueue (cont result))))))))
 
 
 (def-resolver ((ty -prop))

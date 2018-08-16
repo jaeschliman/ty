@@ -744,3 +744,10 @@
        (def y (get (get object2 nested) data))
        (refine! nest a)
        y)) 
+
+(chk '(do
+       (type foo 'foo)
+       (type a (obj type foo))
+       (type p (prop a type))
+       (declare x p)
+       x))

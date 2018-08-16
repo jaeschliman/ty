@@ -3,6 +3,8 @@
 (defpackage :ty (:use :cl :alexandria :5am))
 (in-package :ty)
 
+(defmacro fn (args &body body) `(lambda ,args ,@body))
+
 (defun %bb-thread-clauses (clauses)
   (let (threads)
     (loop while clauses do
@@ -259,6 +261,20 @@ call it 'var' for every variable will have one.
       (expand (-or-b ty))
       (remove-duplicates expanded :test #'teq))))
 
+(defun ensure-type-names (named-list-of-types env &key (key #'identity))
+  (declare (ignore env))
+  (bb fx nil
+      names (loop for entry in named-list-of-types
+               for (name . ty) = (funcall key entry)
+               collect
+                 (progn
+                   (unless name
+                     (bb tyname (make-type-name)
+                         (setf fx (combine-effects (tfx tyname ty) fx)
+                               name tyname)))
+                   name))
+      (values names fx)))
+
 (defun create-named-list-of-or-types (named-list-of-types env)
   (labels ((ensure-named (it)
              (if (consp it) it (cons nil it)))
@@ -305,7 +321,25 @@ call it 'var' for every variable will have one.
           :mv (ty fx) (create-named-list-of-or-types (reverse types) env)
           (values ty (combine-effects fx effects))))
        (quote (-lit (second it)))
-       (obj (-obj (plist-alist (cdr it))))
+       (obj
+        (bb alist (plist-alist (cdr it))
+            :db (named-alist . fx)
+            (reduce (lambda (acc pair)
+                      (bb :db (alist . fx) acc
+                          :db (key . unparsed) pair
+                          tyname (and (symbolp unparsed) unparsed)
+                          :mv (ty nfx) (parse-type unparsed env)
+                          (cons (acons key (cons tyname ty) alist) 
+                                (combine-effects nfx fx))))
+
+                    alist
+                    :initial-value (cons nil nil))
+            :mv (names name-fx) (ensure-type-names named-alist env :key #'cdr)
+            new-alist (mapcar (lambda (name pair)
+                                (cons (car pair) name))
+                              names
+                              named-alist)
+            (values (-obj new-alist) (combine-effects name-fx fx))))
        (prop (-prop (second it) (third it)))))
     (t (error "unimplemented"))))
 
