@@ -659,12 +659,20 @@
              *recursive-cons-type-env)
 
   (ty-assert (circ `(or ,(-lit 'bar) ,(-lit 'foo) :1))
-                  '(do
-                    (type obj-or-foo (or foo obj-or-bar))
-                    (type obj-or-bar (or bar obj-or-foo))
-                    (declare x obj-or-bar)
-                    x)
-                  *recursive-cons-type-env))
+             '(do
+               (type obj-or-foo (or foo obj-or-bar))
+               (type obj-or-bar (or bar obj-or-foo))
+               (declare x obj-or-bar)
+               x)
+             *recursive-cons-type-env)
+
+  (ty-assert (circ `(obj ((next . (or :1 ,(-lit 'null)))
+                          (val . ,(-int)))))
+             '(do
+               (type intlist (obj val int next (or intlist 'null)))
+               (declare x intlist)
+               x))
+  )
 
 ;; (run! 'recursive-types-0)
 (run! 'initial-inferences)
@@ -750,4 +758,32 @@
        (type a (obj type foo))
        (type p (prop a type))
        (declare x p)
+       x))
+
+
+(chk '(do
+       (type intlist (obj val int next (or intlist 'null)))
+       (declare x intlist)
+       x))
+
+(chk '(do
+       (type a (obj type 'a next (or b 'null)))
+       (type b (obj type 'b next (or b 'null)))
+       (declare x b)
+       x))
+
+(chk '(do
+       (type a (obj type 'a next (or b 'null)))
+       (type b (obj type 'b next (or a 'null)))
+       (type c (or a b))
+       (declare x c)
+       x))
+
+;;; need to assert that this even runs...
+;;; the resolved type is ugly, I don't like it
+(chk '(do
+       (type a1 (obj type 'a next (or a1 'null)))
+       (type a2 (obj type 'a next (or a2 'null)))
+       (type b (or a1 a2))
+       (declare x b)
        x))

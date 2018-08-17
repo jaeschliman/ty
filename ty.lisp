@@ -248,6 +248,18 @@ call it 'var' for every variable will have one.
 
 ;;; --- or types
 
+(defmethod shallow-expand-or-type ((ty -or) env)
+  (let (expanded)
+    (flet ((expand (tyname)
+             (let ((it (lookup-type-through-vars tyname env)))
+               (typecase it
+                 (-or (setf expanded
+                            (append (shallow-expand-or-type it env) expanded)))
+                 (t (push tyname expanded))))))
+      (expand (-or-a ty))
+      (expand (-or-b ty))
+      (remove-duplicates expanded :test 'eq))))
+
 (defmethod expand-or-type ((ty -or) env)
   (let (expanded)
     (flet ((expand (tyname)
@@ -373,13 +385,56 @@ call it 'var' for every variable will have one.
          (exp-b (expand-or-type b env)))
     (expanded-or-types-equal exp-a exp-b env)))
 
+(defun pr-table (tbl)
+  (maphash (fn (k v) (format t "~A = ~A~%" k v)) tbl))
+
+(defun obj-to-table (obj env)
+  (bb
+    counter 0
+    name-table (make-hash-table :test 'eq)
+    graph-table (make-hash-table :test 'equalp)
+    (labels
+        ((id (tyname)
+           (ensure-gethash tyname name-table (incf counter)))
+         (represent (tyname)
+           (bb id (id tyname)
+               (if (not #1=(gethash id graph-table))
+                   (setf #1# t
+                         #1# (bb
+                               it (lookup-type-through-vars tyname env)
+                               (etypecase it
+                                 (-empty (gensym))
+                                 (-or
+                                  (bb
+                                    tynames (shallow-expand-or-type it env)
+                                    reprs (mapcar #'represent tynames)
+                                    reprs))
+                                 (-obj (table it))
+                                 (-lit it)
+                                 (-int it))))
+                   id)))
+         (table (obj)
+           (bb
+             id (id obj)
+             (unless #2=(gethash id graph-table)
+                     (setf #2# t)
+                     (loop for (row . tyname) in (-obj-rows obj) do
+                          (setf (gethash (cons id row) graph-table)
+                                (represent tyname))))
+             id)))
+      (table obj)
+      graph-table)))
+
 (defmethod ty-equal ((a -obj) (b -obj) env)
-  (flet ((row-equal (a b)
-           (and (eq (car a) (car b))
-                (ty-equal (lookup-type (cdr a) env)
-                          (lookup-type (cdr b) env)
-                          env))))
-    (unordered-list-equal (-obj-rows a) (-obj-rows b) :test #'row-equal)))
+  (bb atbl (obj-to-table a env)
+      btbl (obj-to-table b env)
+      ;; (pr-table atbl)
+      ;; (format t "-----------------------------~%")
+      ;; (pr-table btbl)
+      (bb result (equalp atbl btbl)
+          ;; (format t "=============================~%")
+          ;; (print result)
+          result)))
 
 ;;; ---- ty-of
 ;; ty-of applies to code in the env, returns 3 values,
