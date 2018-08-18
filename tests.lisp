@@ -254,6 +254,9 @@
      ;; (pprint env)
      (concretize ty env))))
 
+(defun see (expr &optional (env *base-env*))
+  (multiple-value-list (applied-ty expr env)))
+
 (defun chk2 (expr &optional (env *base-env*))
   (print-values
    (multiple-value-bind
@@ -815,3 +818,26 @@
        (type b (or a1 a2))
        (declare x b)
        x))
+
+(chk '(do
+       (type a1 (obj type 'a next (or (obj type 'end)
+                                      (obj type 'link next a2))))
+       (type a2 (obj type 'a next (or (obj type 'link next a1)
+                                      (obj type 'end))))
+       (type b (or a1 a2))
+       (declare x b)
+       (refine! x a2)
+       x))
+
+(see '(do
+       (type a (or 'a 'b))
+       (declare x a)
+       x))
+
+(bb :db (ty tyname env)
+    (see '(do
+           (type a (or 'a 'b))
+           (declare x a)
+           x))
+    or (lookup-type-through-vars tyname env)
+    (or-to-table or env))

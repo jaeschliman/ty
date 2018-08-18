@@ -355,6 +355,111 @@ call it 'var' for every variable will have one.
        (prop (-prop (second it) (third it)))))
     (t (error "unimplemented"))))
 
+;;; ---- equalp representations for complex types
+
+(defun pr-table (tbl)
+  (maphash (fn (k v) (format t "~A = ~A~%" k v)) tbl))
+
+(defun list-to-hashset (list &key (test 'equalp))
+  (bb result (make-hash-table :test test)
+      (dolist (item list result)
+        (setf (gethash item result) t))))
+
+;; TODO: exclude 'simple' ( int, lit ) types from permutation
+;;       just put them in aux... but that might have complications
+
+(defmacro with-tabling-state (supername &body body)
+  `(bb
+     counter 0
+     name-table (make-hash-table :size 15 :test 'eq)
+     graph-table (make-hash-table :size 15 :test 'equal)
+     (labels
+         ((super (tyname)
+            (bb exist (funcall ,supername tyname)
+                (and exist (cons 'super exist))))
+          (id (tyname)
+            (or (super tyname)
+                (ensure-gethash tyname name-table (incf counter))))
+          (lookup (tyname)
+            (or (gethash tyname name-table) (super tyname))))
+       ,@body)))
+
+
+(defun simple-type-p (tyname env)
+  (bb
+    it (lookup-type-through-vars tyname env :allow-unknowns t)
+    (typecase it
+      ((or -lit -int) it)
+      (t nil))))
+
+(defun or-to-table (or env &optional (super (constantly nil)))
+  (bb results nil
+      tynames (shallow-expand-or-type or env)
+      ready-already (fn (tyname)
+                      (or (simple-type-p tyname env)
+                          (funcall super tyname)))
+      to-permute (remove-if ready-already tynames)
+      no-permute (mapcar ready-already (remove-if-not ready-already tynames))
+      aux (and no-permute (list-to-hashset no-permute))
+      (map-permutations
+       (fn (tys)
+         (with-tabling-state super
+           (labels
+               ((represent (tyname)
+                  (if-let (simple-repr (simple-type-p tyname env))
+                    simple-repr
+                    (bb id (id tyname)
+                        (unless (gethash id graph-table)
+                          (setf (gethash id graph-table)
+                                (bb
+                                  it (lookup-type-through-vars
+                                      tyname env :allow-unknowns t)
+                                  (etypecase it
+                                    (-empty (gensym))
+                                    (-unknown id)
+                                    (-obj (obj-to-table it env #'lookup))))))))))
+             (dolist (ty tys)
+               (represent ty)))
+           (push graph-table results)))
+       to-permute :copy nil)
+      final-result (if results
+                       (list-to-hashset (cons aux results))
+                       aux)
+      final-result))
+
+;; TODO: sort rows by key
+(defun obj-to-table (obj env &optional (super (constantly nil)))
+  (bb
+    ors nil
+    (with-tabling-state super
+      (labels
+          ((represent (tyname)
+             (if-let (simple-repr (simple-type-p tyname env))
+               simple-repr
+               (bb id (id tyname)
+                   (if (not #1=(gethash id graph-table))
+                       (setf #1# t
+                             #1# (bb
+                                   it (lookup-type-through-vars
+                                       tyname env :allow-unknowns t)
+                                   (etypecase it
+                                     (-empty (gensym))
+                                     (-unknown id)
+                                     (-or (or-to-table it env #'lookup))
+                                     (-obj (table it)))))
+                       id))))
+           (table (obj)
+             (bb
+               id (id obj)
+               (unless #2=(gethash id graph-table)
+                       (setf #2# t)
+                       (loop for (row . tyname) in (-obj-rows obj) do
+                            (setf (gethash (cons id row) graph-table)
+                                  (represent tyname))))
+               id)))
+        (table obj)
+        (values graph-table ors counter)))))
+
 ;;; ---- ty-equal
 
 (defmethod ty-equal ((a ty) (b ty) env)
@@ -376,111 +481,10 @@ call it 'var' for every variable will have one.
 (defmethod ty-equal ((a ty) (b -var) env)
   (ty-equal b a env))
 
-(defun expanded-or-types-equal (exp-a exp-b env)
-  (flet ((teq (a b) (ty-equal a b env)))
-    (unordered-list-equal exp-a exp-b :test #'teq)))
-
 (defmethod ty-equal ((a -or) (b -or) env)
-  (let* ((exp-a (expand-or-type a env))
-         (exp-b (expand-or-type b env)))
-    (expanded-or-types-equal exp-a exp-b env)))
-
-(defun pr-table (tbl)
-  (maphash (fn (k v) (format t "~A = ~A~%" k v)) tbl))
-
-(defun list-to-hashset (list &key (test 'equalp))
-  (bb result (make-hash-table :test test)
-      (dolist (item list result)
-        (setf (gethash item result) t))))
-
-;; TODO: exclude 'simple' ( int, lit ) types from permutation
-;;       just put them in aux... but that might have complications
-(defun or-to-table (or env &optional (super (constantly nil)))
-  (bb results nil
-      tynames (shallow-expand-or-type or env)
-      to-permute (remove-if super tynames)
-      no-permute (mapcar super (remove-if-not super tynames))
-      aux (and no-permute (list-to-hashset no-permute))
-      (map-permutations
-       (fn (tys)
-         (bb
-           counter 0
-           name-table (make-hash-table :size 15 :test 'eq)
-           graph-table (make-hash-table :size 15 :test 'equal)
-           (labels
-               ((super (tyname)
-                  (bb exist (funcall super tyname)
-                      (and exist (cons 'super exist))))
-                (id (tyname)
-                  (or (super tyname)
-                      (ensure-gethash tyname name-table (incf counter))))
-                (lookup (tyname)
-                  (or (gethash tyname name-table) (super tyname)))
-                (represent (tyname)
-                  (bb id (id tyname)
-                      (unless (gethash id graph-table)
-                        (setf (gethash id graph-table)
-                              (bb
-                                it (lookup-type-through-vars tyname env)
-                                (etypecase it
-                                  (-empty (gensym))
-                                  (-unknown id)
-                                  (-or ;; should not happen
-                                   (assert nil))
-                                  (-obj (obj-to-table it env #'lookup))
-                                  (-lit it)
-                                  (-int it))))))))
-             (dolist (ty tys)
-               (represent ty)))
-           (push graph-table results)))
-       to-permute :copy nil)
-      final-result (list-to-hashset (cons aux results))
-
-      final-result))
-
-;; TODO: sort rows by key
-(defun obj-to-table (obj env &optional (super (constantly nil)))
-  (bb
-    counter 0
-    name-table (make-hash-table :size 15 :test 'eq)
-    graph-table (make-hash-table :size 15 :test 'equal)
-    ors nil
-    (labels
-        ((super (tyname)
-           (bb exist (funcall super tyname)
-               (and exist (cons 'super exist))))
-         (id (tyname)
-           (or (super tyname)
-               (ensure-gethash tyname name-table (incf counter))))
-         (lookup (tyname)
-           (or (gethash tyname name-table)
-               (super tyname)))
-         (represent (tyname)
-           (bb id (id tyname)
-               (if (not #1=(gethash id graph-table))
-                   (setf #1# t
-                         #1# (bb
-                               it (lookup-type-through-vars
-                                   tyname env :allow-unknowns t)
-                               (etypecase it
-                                 (-empty (gensym))
-                                 (-unknown id)
-                                 (-or (or-to-table it env #'lookup))
-                                 (-obj (table it))
-                                 (-lit it)
-                                 (-int it))))
-                   id)))
-         (table (obj)
-           (bb
-             id (id obj)
-             (unless #2=(gethash id graph-table)
-                     (setf #2# t)
-                     (loop for (row . tyname) in (-obj-rows obj) do
-                          (setf (gethash (cons id row) graph-table)
-                                (represent tyname))))
-             id)))
-      (table obj)
-      (values graph-table ors counter))))
+  (bb atbl (or-to-table a env)
+      btbl (or-to-table b env)
+      (equalp atbl btbl)))
 
 (defmethod ty-equal ((a -obj) (b -obj) env)
   (bb :mv (atbl aors acounter) (obj-to-table a env)
