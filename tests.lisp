@@ -6,7 +6,7 @@
 
 (defmacro print-values (form)
   `(let ((*print-circle* t))
-    (print (multiple-value-list ,form))))
+    (pprint (multiple-value-list ,form))))
 
 (defmacro ty-full-assert (type name effects form &body env)
   `(is (equalp (list ,type ,name ,effects) (multiple-value-list (ty-of ,form ,@env)))))
@@ -784,6 +784,34 @@
 (chk '(do
        (type a1 (obj type 'a next (or a1 'null)))
        (type a2 (obj type 'a next (or a2 'null)))
+       (type b (or a1 a2))
+       (declare x b)
+       x))
+
+(chk '(do
+       (type a1 (obj type 'a next (or (obj type 'end)
+                                      (obj type 'link next a1))))
+       (type a2 (obj type 'a next (or (obj type 'end)
+                                      (obj type 'link next a2))))
+       (type b a2;;(or a1 a2)
+        )
+       (declare x b)
+       x))
+
+(chk '(do
+       (type a1 (obj type 'a next (or (obj type 'end)
+                                      (obj type 'link next a1))))
+       (type a2 (obj type 'a next (or (obj type 'link next a2)
+                                      (obj type 'end))))
+       (type b (or a1 a2))
+       (declare x b)
+       x))
+
+(chk '(do
+       (type a1 (obj type 'a next (or (obj type 'end)
+                                      (obj type 'link next a2))))
+       (type a2 (obj type 'a next (or (obj type 'link next a1)
+                                      (obj type 'end))))
        (type b (or a1 a2))
        (declare x b)
        x))

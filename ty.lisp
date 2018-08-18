@@ -388,27 +388,84 @@ call it 'var' for every variable will have one.
 (defun pr-table (tbl)
   (maphash (fn (k v) (format t "~A = ~A~%" k v)) tbl))
 
-(defun obj-to-table (obj env)
+(defun list-to-hashset (list &key (test 'equalp))
+  (bb result (make-hash-table :test test)
+      (dolist (item list result)
+        (setf (gethash item result) t))))
+
+;; TODO: exclude 'simple' ( int, lit ) types from permutation
+;;       just put them in aux... but that might have complications
+(defun or-to-table (or env &optional (super (constantly nil)))
+  (bb results nil
+      tynames (shallow-expand-or-type or env)
+      to-permute (remove-if super tynames)
+      no-permute (mapcar super (remove-if-not super tynames))
+      aux (and no-permute (list-to-hashset no-permute))
+      (map-permutations
+       (fn (tys)
+         (bb
+           counter 0
+           name-table (make-hash-table :size 15 :test 'eq)
+           graph-table (make-hash-table :size 15 :test 'equal)
+           (labels
+               ((super (tyname)
+                  (bb exist (funcall super tyname)
+                      (and exist (cons 'super exist))))
+                (id (tyname)
+                  (or (super tyname)
+                      (ensure-gethash tyname name-table (incf counter))))
+                (lookup (tyname)
+                  (or (gethash tyname name-table) (super tyname)))
+                (represent (tyname)
+                  (bb id (id tyname)
+                      (unless (gethash id graph-table)
+                        (setf (gethash id graph-table)
+                              (bb
+                                it (lookup-type-through-vars tyname env)
+                                (etypecase it
+                                  (-empty (gensym))
+                                  (-unknown id)
+                                  (-or ;; should not happen
+                                   (assert nil))
+                                  (-obj (obj-to-table it env #'lookup))
+                                  (-lit it)
+                                  (-int it))))))))
+             (dolist (ty tys)
+               (represent ty)))
+           (push graph-table results)))
+       to-permute :copy nil)
+      final-result (list-to-hashset (cons aux results))
+
+      final-result))
+
+;; TODO: sort rows by key
+(defun obj-to-table (obj env &optional (super (constantly nil)))
   (bb
     counter 0
-    name-table (make-hash-table :test 'eq)
-    graph-table (make-hash-table :test 'equalp)
+    name-table (make-hash-table :size 15 :test 'eq)
+    graph-table (make-hash-table :size 15 :test 'equal)
+    ors nil
     (labels
-        ((id (tyname)
-           (ensure-gethash tyname name-table (incf counter)))
+        ((super (tyname)
+           (bb exist (funcall super tyname)
+               (and exist (cons 'super exist))))
+         (id (tyname)
+           (or (super tyname)
+               (ensure-gethash tyname name-table (incf counter))))
+         (lookup (tyname)
+           (or (gethash tyname name-table)
+               (super tyname)))
          (represent (tyname)
            (bb id (id tyname)
                (if (not #1=(gethash id graph-table))
                    (setf #1# t
                          #1# (bb
-                               it (lookup-type-through-vars tyname env)
+                               it (lookup-type-through-vars
+                                   tyname env :allow-unknowns t)
                                (etypecase it
                                  (-empty (gensym))
-                                 (-or
-                                  (bb
-                                    tynames (shallow-expand-or-type it env)
-                                    reprs (mapcar #'represent tynames)
-                                    reprs))
+                                 (-unknown id)
+                                 (-or (or-to-table it env #'lookup))
                                  (-obj (table it))
                                  (-lit it)
                                  (-int it))))
@@ -423,18 +480,37 @@ call it 'var' for every variable will have one.
                                 (represent tyname))))
              id)))
       (table obj)
-      graph-table)))
+      (values graph-table ors counter))))
 
 (defmethod ty-equal ((a -obj) (b -obj) env)
-  (bb atbl (obj-to-table a env)
-      btbl (obj-to-table b env)
-      ;; (pr-table atbl)
-      ;; (format t "-----------------------------~%")
-      ;; (pr-table btbl)
-      (bb result (equalp atbl btbl)
-          ;; (format t "=============================~%")
-          ;; (print result)
-          result)))
+  (bb :mv (atbl aors acounter) (obj-to-table a env)
+      :mv (btbl bors bcounter) (obj-to-table b env)
+      (when (and (= acounter bcounter)
+                 (= (length aors)
+                    (length bors)))
+        ;; (pprint aors)
+        ;; (pr-table atbl)
+        ;; (format t "-----------------------------~%")
+        ;; (bb perms (mapcar (fn (list)
+        ;;                     (bb perms nil
+        ;;                         (map-permutations (lambda (perm) (push perm perms))
+        ;;                                           list :copy t)
+        ;;                         perms))
+        ;;                   aors)
+        ;;     combos nil
+        ;;     (map-combinations (fn (combo) (push combo combos))
+        ;;                       perms :copy t)
+        ;;     (format t "~A combos~%" combos)
+        ;;     (pprint perms))
+      
+      
+        ;; (format t "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~%")
+        ;; (pprint bors)
+        ;; (pr-table btbl)
+        (bb result (equalp atbl btbl)
+        ;; (format t "=============================~%")
+        ;;     (print result)
+            result))))
 
 ;;; ---- ty-of
 ;; ty-of applies to code in the env, returns 3 values,
@@ -530,7 +606,6 @@ call it 'var' for every variable will have one.
                 (tfx var-type (-var type-name))
                 fx)))))) 
 
-;;well, this was buggy!
 (defun combine-new-types (a b env)
   (if (ty-equal a b env)
       (values a (make-effects :types (acons (make-type-name) a nil)))
@@ -544,10 +619,10 @@ call it 'var' for every variable will have one.
                               (cons bn b)
                               (cons cn ty)))))))
 
-(defmethod lookup-type-through-vars (name env)
+(defmethod lookup-type-through-vars (name env &key allow-unknowns)
   (loop
      for ty-name = name then (-var-ref ty)
-     for ty = (lookup-type ty-name env)
+     for ty = (lookup-type ty-name env :allow-unknowns allow-unknowns)
      while (-var-p ty)
      finally (return ty)))
 
