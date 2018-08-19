@@ -54,16 +54,26 @@
   (format stream "[~A]" (ty-name self)))
 
 (defmacro defty (name print-name &rest members)
-  (let ((args (mapcar #'ensure-car members)))
-    `(defstruct (,name (:include ty (name ',print-name)) (:constructor ,name ,args))
+  (bb
+    name-and-super (ensure-list name)
+    name (first name-and-super)
+    super (or (second name-and-super) 'ty)
+    args (mapcar #'ensure-car members)
+    `(defstruct (,name (:include ,super (name ',print-name))
+                       (:constructor ,name ,args))
        ,@members)))
 
 (defty -empty empty)
 
 (defty -int int)
-(defty -lit lit (value nil :type symbol))
+(defty -sym sym)
+(defty (-lit -sym) lit (value nil :type symbol))
 (defmethod print-object ((self -lit) stream)
   (format stream "[~A ~S]" (ty-name self) (-lit-value self)))
+
+(defty -bool bool)
+(defty (-true -bool) true)
+(defty (-false -bool) false)
 
 (defty -or or (a nil :type symbol) (b nil :type symbol)) ;; a and by are ty-names
 (defmethod print-object ((self -or) stream)
@@ -204,7 +214,8 @@ call it 'var' for every variable will have one.
     (values nil nil)))
 
 (defparameter *base-env*
-  (make-env :vars nil
+  (make-env :vars `((true . ,(-true))
+                    (false . ,(-false)))
             :types `((int . ,(-int)))
             :errors nil))
 
@@ -389,7 +400,7 @@ call it 'var' for every variable will have one.
   (bb
     it (lookup-type-through-vars tyname env :allow-unknowns t)
     (typecase it
-      ((or -lit -int) it)
+      ((or -sym -int -bool) it)
       (t nil))))
 
 (defun or-to-table (or env &optional (super (constantly nil)))
@@ -608,7 +619,15 @@ call it 'var' for every variable will have one.
                (combine-effects
                 (vfx varname var-type)
                 (tfx var-type (-var type-name))
-                fx)))))) 
+                fx))))
+    (type-equal?
+     (bb
+       :db (a b) (cdr form)
+       tya (lookup-type-through-vars a env :allow-unknowns t)
+       tyb (lookup-type-through-vars b env :allow-unknowns t)
+       (if (ty-equal tya tyb env)
+           (-true)
+           (-false)))))) 
 
 (defun combine-new-types (a b env)
   (if (ty-equal a b env)

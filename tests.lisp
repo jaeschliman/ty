@@ -585,9 +585,9 @@
                        (-or (expand-or-type ty env))
                        (t   (list ty)))))
                (flet ((teq (a b) (ty-equal a b env)))
-                 (expanded-or-types-equal expansion
-                                          (remove-duplicates types :test #'teq)
-                                          env))))))
+                 (unordered-list-equal expansion
+                                       (remove-duplicates types :test #'teq)
+                                       :test #'teq))))))
     (is (test-or-type-creation (-lit 'a)))
     (is (test-or-type-creation (-lit 'a) (-lit 'b)))
     (is (test-or-type-creation (-lit 'a) (-lit 'b) (-lit 'c)))
@@ -841,3 +841,10 @@
            x))
     or (lookup-type-through-vars tyname env)
     (or-to-table or env))
+
+(chk '(do
+       (type a1 (obj type 'a next (or (obj type 'end)
+                                      (obj type 'link next a2))))
+       (type a2 (obj type 'a next (or (obj type 'link next a1)
+                                      (obj type 'end))))
+       (type-equal? a1 a2)))
