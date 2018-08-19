@@ -184,6 +184,94 @@ call it 'var' for every variable will have one.
 |#
 
 #|
+second-and-half goal...
+if! with refinements!
+(do
+ (type foo (or (obj type 'a data 'foo)
+               (obj type 'b data 'bar)))
+ (declare x foo)
+ (if (eq (get x type) 'a)
+     (get x data)
+     (get x type)))
+;; => (or 'foo 'b)
+
+this will be tough, how do we combine the fx of the two branches?
+we could disallow rebinding side effects, but how then do we refine?
+also, how to do the refine-not (the else branch)
+
+time to revisit how refine! works...
+
+ok... maybe this whole -prop -var tangle is due to a mistake...
+-prop takes a typename and an object key...
+I guess this makes sense....
+if you want to have, like, $Prop<Foo, 'x'> like flow does...
+but then we end up narrowing types... what we should be doing is
+narrowing the types of variable bindings, not types themselves...
+that is, introducing new narrow types and rebinding vars appropriately.
+I mean I guess this is what the -var type was attempting to mix in to things...
+ok, fair sized amount of work to correct this, I guess...
+at least I'll able to get rid of the -var nonsense.
+
+so perhaps it should be illegal to rebind type names.
+however having types (-prop refs) dependent on variable bindings, which can change,
+means that the /meaning/ of a type name can change, which is bad...
+but also kind of how this whole things is designed lol...
+
+so perhaps -prop remains pointed at a type name, but refine works over variable
+bindings, so refining a -prop will mean introducing a new -prop type...
+how then will this propagate to other -prop refs?
+
+I guess maybe type-level $Prop<Foo, 'x'> should be saved for another time
+and have different semantics...
+
+so perhaps we /should/ have a variable name in the type system?
+now things get really tangled...
+e.g. how do you handle shadowing? (start numbering scopes as we go inward?)
+
+also this doesnt remove the need for answering the big open question here, which is
+how do we combine the effects of the two if branches?
+how do we extract the final type of each branch without pulling in mutations?
+this will be a question when it comes to function definitions as well...
+
+perhaps there can be some sort of 'simplify this type given this list
+of variable bindings', where we search through any prop refs, and if
+they are found to match a given variable name, then we must 'realize'
+or 'concretize' that prop type to allow passing it up to the parent scope
+
+that could work, I think...
+now there is the question what about prop-refs to expressions?
+do we introduce unique var names?
+
+so I guess the plan is, we should be able to combine the type effects
+of both if branches without worry, since re-binding type names will now
+be disallowed. however, since the meaning of a -prop type can change when
+a variable is rebound, when propagating the type effects out of a scope,
+we will need to check whether a: there are any variable bindings in the fx,
+and b: whether there are any references to those variable bindings in the fresh types
+of those fx. if both a and b are true, then we will need to substitute all types in
+the fx which transitively refer to the given variable bindings with new types
+containing the 'realized' type of that prop ref given the new variable bindings.
+this ensures that var 'mutations' will not escape the given scope i.e. will only
+propagate inwards...
+
+this does not, however solve the problem of a potentially useless mass of type
+introductions escaping the branch. perhaps we also need some sort of garbage
+collector for the effects, that walks from the 'primary' return type and only
+pulls in effects which are referenced along the way... ugh...
+this smells like a design problem...
+time to review ty-of... perhaps we are introducing too many types from ty-of...
+I mean it would be nice, for example, to allow lexical type definitions without
+fear of them escaping when we apply the needed introductions for a given type...
+I guess that's partially the shadowing problem again (mentioned above) and then
+partially the garbage collection problem...
+it would be nice if there were just fewer type names floating around...
+I guess we could have some sort of canonical mapping of type representation to names...
+I mean I guess it would be nice if we could stop naming types so much anyway...
+but how then recursive types? 
+
+|#
+
+#|
  third goal:
   function application
  fourth goal:
@@ -561,21 +649,23 @@ call it 'var' for every variable will have one.
 (defmethod ty-of ((num integer) env)
   (values (alist-get 'int (env-types env)) 'int nil))
 
+(defun ty-of-forms (forms env)
+  (loop
+     with env = env
+     with fx = nil
+     with next-fx = nil
+     with ty = (-empty)
+     with ty-name = nil
+     for form in forms do
+       (multiple-value-setq (ty ty-name next-fx) (ty-of form env))
+       (setf env (apply-effects env next-fx)
+             fx (combine-effects next-fx fx))
+     finally (return (values ty ty-name fx))))
+
 ;; welcome to the evaluator
 (defmethod ty-of ((form list) env)
   (ecase (car form)
-    (do
-     (loop
-        with env = env
-        with fx = nil
-        with next-fx = nil
-        with ty = (-empty)
-        with ty-name = nil
-        for form in (cdr form) do
-          (multiple-value-setq (ty ty-name next-fx) (ty-of form env))
-          (setf env (apply-effects env next-fx)
-                fx (combine-effects next-fx fx))
-        finally (return-from ty-of (values ty ty-name fx))))
+    (do (ty-of-forms (cdr form) env))
     ;; this should not directly exist in 'user' code
     (refine!
      (bb
@@ -714,6 +804,7 @@ call it 'var' for every variable will have one.
    (refineable? (lookup-type (-or-a gen) env) nar env)
    (refineable? (lookup-type (-or-b gen) env) nar env)))
 
+;; TODO: the narrow type should be assignable to the general type
 ;; refine: named general type + narrow type -> maybe side effects
 (defmethod refine :around (name (gen ty) (narrow ty) env)
   (declare (ignore name env))
@@ -797,13 +888,11 @@ call it 'var' for every variable will have one.
                         (a?
                          (combine-effects
                           (or (refine name row-a nar env) (tfx name nar))
-                          (tfx target-type a)
-                          (refine (-or-a target) target a env)))
+                          (tfx target-type a)))
                         (b?
                          (combine-effects
                           (or (refine name row-b nar env) (tfx name nar))
-                          (tfx target-type b) 
-                          (refine (-or-b target) target b env)))
+                          (tfx target-type b)))
                         (t (error "should not happen")))))
                    (-prop
                     (let* ((sub-target (lookup-type-through-vars
