@@ -49,9 +49,14 @@
   (and (= (length a) (length b))
        (null (set-difference a b :test test))))
 
+(defstruct env
+  vars types errors)
+
 (defstruct (ty (:constructor nil)) name)
 (defmethod print-object ((self ty) stream)
   (format stream "[~A]" (ty-name self)))
+
+(deftype tyref () '(or ty symbol))
 
 (defmacro defty (name print-name &rest members)
   (bb
@@ -75,25 +80,39 @@
 (defty (-true -bool) true)
 (defty (-false -bool) false)
 
-(defty -or or (a nil :type symbol) (b nil :type symbol)) ;; a and by are ty-names
+(defty -or or
+  (a nil :type tyref)
+  (b nil :type tyref)
+  (env nil :type env)) 
+
 (defmethod print-object ((self -or) stream)
   (format stream "[~A ~A ~A]" (ty-name self) (-or-a self) (-or-b self)))
 
 (defty -obj object
-  (rows nil :type list)) ;;rows is an alist of (sym . ty-name)
+  (rows nil :type list) ;;rows is an alist of (sym . tyref)
+  (env nil :type env)) 
+
 (defmethod print-object ((self -obj) stream)
   (format stream "[~A (~{~A~})]" (ty-name self) (-obj-rows self)))
 
 (defty -prop prop
-  (ty nil :type symbol)
-  (prop nil :type symbol))
+  (ty nil :type symbol) ;;TODO: change to VAR
+  (prop nil :type symbol)
+  (env nil :type env))
+
 (defmethod print-object ((self -prop) stream)
   (format stream "[~A ~A.~A]" (ty-name self) (-prop-ty self) (-prop-prop self)))
 
-(defty -var var
+(defty -var var ;;TODO: delete me
   (ref nil :type symbol))
+
 (defmethod print-object ((self -var) stream)
   (format stream "<~A : ~A>" (ty-name self) (-var-ref self)))
+
+(defty -name name
+  (print-name nil :type symbol)
+  (ty nil :type tyref)
+  (env nil :type tyref))
 
 (defty -unknown unknown)
 
@@ -268,6 +287,16 @@ it would be nice if there were just fewer type names floating around...
 I guess we could have some sort of canonical mapping of type representation to names...
 I mean I guess it would be nice if we could stop naming types so much anyway...
 but how then recursive types? 
+I mean, I guess the point is that if we could return types as /values/
+instead of a sequence of name/value pairs, that would simplify things alot...
+but would then need some sort of -ref type... I'm not sure that really simplifies
+things too much... 
+
+upon further reflection, for v2 of this,
+/a type is like a closure/
+it should carry within it a link to its definition environment if needed,
+so that it can be 'evaluated'
+
 
 |#
 
@@ -284,12 +313,14 @@ but how then recursive types?
   (declare (ignore param))
   (gensym))
 
-(defstruct env
-  vars types errors)
 (defstruct effects
   vars types errors)
 
-(defun lookup-type (ty-name env &key allow-unknowns)
+(defmethod lookup-type ((ty ty) env &key allow-unknowns)
+  (declare (ignore env allow-unknowns))
+  ty)
+
+(defmethod lookup-type ((ty-name symbol) env &key allow-unknowns)
   (or
    (alist-get ty-name (env-types env))
    (if allow-unknowns
@@ -391,17 +422,17 @@ but how then recursive types?
              (if (consp it) it (cons nil it)))
            (combine1 (a b)
              (bb
-               na (or (car a) (make-type-name))
-               nb (or (car b) (make-type-name))
-               ty (-or na nb)
-               (values (cons nil ty) (tfx na (cdr a) nb (cdr b)))))
+               ty (-or (cdr a) (cdr b) env)
+               (values (cons nil ty) nil)))
            (combine (a b &rest more)
              (if more
                  (bb :mv (ty fx)   (combine1 a b)
                      :mv (ty2 fx2) (apply #'combine ty more)
                      (values ty2 (combine-effects fx2 fx))) 
                  (combine1 a b)))
-           (teq (a b) (ty-equal a b env)))
+           (teq (a b)
+             (unless (or (symbolp a) (symbolp b))
+               (ty-equal a b env))))
     (let ((named-types (remove-duplicates named-list-of-types
                                           :test #'teq :key #'cdr)))
       (if (= 1 (length named-types))
@@ -416,7 +447,10 @@ but how then recursive types?
 (defun parse-type (it env)
   (cond
     ((symbolp it)
-     (lookup-type it env :allow-unknowns t))
+     (bb parsed (lookup-type it env :allow-unknowns t)
+         (if (-unknown-p parsed)
+             it
+             parsed)))
     ((listp it)
      (ecase (car it)
        (or
@@ -450,8 +484,8 @@ but how then recursive types?
                                 (cons (car pair) name))
                               names
                               named-alist)
-            (values (-obj new-alist) (combine-effects name-fx fx))))
-       (prop (-prop (second it) (third it)))))
+            (values (-obj new-alist env) (combine-effects name-fx fx))))
+       (prop (-prop (second it) (third it) env))))
     (t (error "unimplemented"))))
 
 ;;; ---- equalp representations for complex types
@@ -491,48 +525,50 @@ but how then recursive types?
       ((or -sym -int -bool) it)
       (t nil))))
 
-(defun or-to-table (or env &optional (super (constantly nil)))
-  (bb results nil
-      tynames (shallow-expand-or-type or env)
-      ready-already (fn (tyname)
-                      (or (simple-type-p tyname env)
-                          (funcall super tyname)))
-      to-permute (remove-if ready-already tynames)
-      no-permute (mapcar ready-already (remove-if-not ready-already tynames))
-      aux (and no-permute (list-to-hashset no-permute))
-      (map-permutations
-       (fn (tys)
-         (with-tabling-state super
-           (labels
-               ((represent (tyname)
-                  (if-let (simple-repr (simple-type-p tyname env))
-                    simple-repr
-                    (bb id (id tyname)
-                        (unless (gethash id graph-table)
-                          (setf (gethash id graph-table)
-                                (bb
-                                  it (lookup-type-through-vars
-                                      tyname env :allow-unknowns t)
-                                  (etypecase it
-                                    (-empty (gensym))
-                                    (-unknown id)
-                                    (-obj (obj-to-table it env #'lookup))))))))))
-             (dolist (ty tys)
-               (represent ty)))
-           (push graph-table results)))
-       to-permute :copy nil)
-      final-result (if results
-                       (list-to-hashset (cons aux results))
-                       aux)
-      final-result))
+(defun or-to-table (or &optional (super (constantly nil)))
+  (bb
+    env (-or-env or)
+    results nil
+    tynames (shallow-expand-or-type or env)
+    ready-already (fn (tyname)
+                    (or (simple-type-p tyname env)
+                        (funcall super tyname)))
+    to-permute (remove-if ready-already tynames)
+    no-permute (mapcar ready-already (remove-if-not ready-already tynames))
+    aux (and no-permute (list-to-hashset no-permute))
+    (map-permutations
+     (fn (tys)
+       (with-tabling-state super
+         (labels
+             ((represent (tyname)
+                (if-let (simple-repr (simple-type-p tyname env))
+                  simple-repr
+                  (bb id (id tyname)
+                      (unless (gethash id graph-table)
+                        (setf (gethash id graph-table)
+                              (bb
+                                it (lookup-type-through-vars
+                                    tyname env :allow-unknowns t)
+                                (etypecase it
+                                  (-empty (gensym))
+                                  (-unknown id)
+                                  (-obj (obj-to-table it #'lookup))))))))))
+           (dolist (ty tys)
+             (represent ty)))
+         (push graph-table results)))
+     to-permute :copy nil)
+    final-result (if results
+                     (list-to-hashset (cons aux results))
+                     aux)
+    final-result))
 
 ;; TODO: sort rows by key
-(defun obj-to-table (obj env &optional (super (constantly nil)))
+(defun obj-to-table (obj &optional (super (constantly nil)))
   (bb
     ors nil
     (with-tabling-state super
       (labels
-          ((represent (tyname)
+          ((represent (tyname env)
              (if-let (simple-repr (simple-type-p tyname env))
                simple-repr
                (bb id (id tyname)
@@ -544,17 +580,18 @@ but how then recursive types?
                                    (etypecase it
                                      (-empty (gensym))
                                      (-unknown id)
-                                     (-or (or-to-table it env #'lookup))
+                                     (-or (or-to-table it #'lookup))
                                      (-obj (table it)))))
                        id))))
            (table (obj)
              (bb
+               env (-obj-env obj)
                id (id obj)
                (unless #2=(gethash id graph-table)
                        (setf #2# t)
                        (loop for (row . tyname) in (-obj-rows obj) do
                             (setf (gethash (cons id row) graph-table)
-                                  (represent tyname))))
+                                  (represent tyname env))))
                id)))
         (table obj)
         (values graph-table ors counter)))))
@@ -581,13 +618,15 @@ but how then recursive types?
   (ty-equal b a env))
 
 (defmethod ty-equal ((a -or) (b -or) env)
-  (bb atbl (or-to-table a env)
-      btbl (or-to-table b env)
+  (declare (ignore env))
+  (bb atbl (or-to-table a)
+      btbl (or-to-table b)
       (equalp atbl btbl)))
 
 (defmethod ty-equal ((a -obj) (b -obj) env)
-  (bb :mv (atbl aors acounter) (obj-to-table a env)
-      :mv (btbl bors bcounter) (obj-to-table b env)
+  (declare (ignore env))
+  (bb :mv (atbl aors acounter) (obj-to-table a)
+      :mv (btbl bors bcounter) (obj-to-table b)
       (when (and (= acounter bcounter)
                  (= (length aors)
                     (length bors)))
@@ -678,7 +717,7 @@ but how then recursive types?
      (bb
        :db (obj prop) (cdr form)
        :mv (_ ty-name fx) (ty-of obj env)
-       ty (-prop ty-name prop)
+       ty (-prop ty-name prop env)
        (introduce ty fx env)))
     (type
      (bb
@@ -725,7 +764,7 @@ but how then recursive types?
       (bb an (make-type-name)
           bn (make-type-name)
           cn (make-type-name)
-          ty (-or an bn)
+          ty (-or an bn env)
         (values ty
                 (make-effects
                  :types (list (cons an a)
