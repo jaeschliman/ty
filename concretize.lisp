@@ -30,7 +30,7 @@
      (flet
          ((cont (result) (funcall cont result))
           (forward-ref (partial-result)
-            (push (cons *currently-resolving-name* partial-result)
+            (push (cons ,name partial-result)
                   *current-resolutions*)
             partial-result))
        (macrolet
@@ -40,6 +40,11 @@
          (progn
            ,@body
            (values))))))
+
+(defmethod resolve :around ((it ty) (env env) cont)
+  (if-let (resolved (alist-get it *current-resolutions*))
+    (funcall cont resolved)
+    (call-next-method)))
 
 (def-resolver ((null null))
   (assert nil)
@@ -68,6 +73,7 @@
 
 (def-resolver ((ty -obj))
   (bb
+    env (-obj-env ty)
     rows (-obj-rows ty)
     acc nil
     result (list 'obj nil)
@@ -111,42 +117,52 @@
 
 (def-resolver ((ty -or))
   (bb
+    env (-or-env ty)
     result (list 'or)
     acc nil
     (forward-ref result)
-    (enqueue (resolve->
-              (-or-a ty) a
-              (push a acc)
-              (enqueue (resolve->
-                        (-or-b ty) b
-                        (push b acc)
-                        (bb
-                          members (reverse acc)
-                          (setf (cdr result) members)
-                          (setf (cdr result)
-                                (resolved-flattened-or-members (list* 'or members)
-                                                               (list result)
-                                                               :preserve-empty t)))
-                        (enqueue (cont result))))))))
+    (enqueue
+     (resolve->
+      (-or-a ty) a
+      (push a acc)
+      (enqueue
+       (resolve->
+        (-or-b ty) b
+        (push b acc)
+        (bb
+          members (reverse acc)
+          (setf (cdr result) members)
+          (setf (cdr result)
+                (resolved-flattened-or-members (list* 'or members)
+                                               (list result)
+                                               :preserve-empty t)))
+        (enqueue (cont result))))))))
 
+(def-resolver ((ty -name))
+  (bb env (-name-env ty)
+      (resolve-> (-name-ty ty) result
+                 (enqueue (cont result)))))
 
 (def-resolver ((ty -prop))
-  (let ((prop-name (-prop-prop ty))
-        (ref-ty (alist-get (-prop-ty ty) (env-types env))))
-    (flet ((get-prop (from)
-             (if (and (listp from)
-                      (eq (car from) 'obj))
-                 (alist-get prop-name (second from))
-                 (-empty))))
-      (resolve->
-       ref-ty rez
-       (etypecase rez
-         (-empty (cont rez))
-         (list
-          (ecase (car rez)
-            (or
-             (bb tys (resolved-flattened-or-members rez)
-                 (cont (cons 'or (mapcar #'get-prop tys)))))
-            (obj
-             (cont (get-prop rez))))))))))
+  (bb prop-name (-prop-prop ty)
+      env (-prop-env ty)
+      prop-ty (-prop-ty ty)
+      ref-ty (alist-get prop-ty (env-types env))
+      (assert ref-ty)
+      (flet ((get-prop (from)
+               (if (and (listp from)
+                        (eq (car from) 'obj))
+                   (alist-get prop-name (second from))
+                   (-empty))))
+        (resolve->
+         ref-ty rez
+         (etypecase rez
+           (-empty (cont rez))
+           (list
+            (ecase (car rez)
+              (or
+               (bb tys (resolved-flattened-or-members rez)
+                   (cont (cons 'or (mapcar #'get-prop tys)))))
+              (obj
+               (cont (get-prop rez))))))))))
 

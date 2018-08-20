@@ -96,12 +96,14 @@
   (format stream "[~A (~{~A~})]" (ty-name self) (-obj-rows self)))
 
 (defty -prop prop
-  (ty nil :type symbol) ;;TODO: change to VAR
+  (var nil :type symbol) ;;TODO: change to VAR
   (prop nil :type symbol)
   (env nil :type env))
+(defun -prop-ty (prop)
+  (alist-get (-prop-var prop) (env-vars (-prop-env prop))))
 
 (defmethod print-object ((self -prop) stream)
-  (format stream "[~A ~A.~A]" (ty-name self) (-prop-ty self) (-prop-prop self)))
+  (format stream "[~A ~A.~A]" (ty-name self) (-prop-var self) (-prop-prop self)))
 
 (defty -var var ;;TODO: delete me
   (ref nil :type symbol))
@@ -112,7 +114,10 @@
 (defty -name name
   (print-name nil :type symbol)
   (ty nil :type tyref)
-  (env nil :type tyref))
+  (env nil :type env))
+(defmethod print-object ((self -var) stream)
+  (format stream "[~A : ~A]" (-name-print-name self) (-name-ty self)))
+
 
 (defty -unknown unknown)
 
@@ -454,6 +459,7 @@ so that it can be 'evaluated'
     ((listp it)
      (ecase (car it)
        (or
+        ;; TODO clean up / simplify here
         (bb
           :db (types . effects)
           (reduce (lambda (acc unparsed)
@@ -463,29 +469,34 @@ so that it can be 'evaluated'
                               (combine-effects fx (cdr acc)))))
                   (cdr it)
                   :initial-value (cons nil nil))
-          :mv (ty fx) (create-named-list-of-or-types (reverse types) env)
+          new-env (apply-effects env effects)
+          :mv (ty fx) (create-named-list-of-or-types (reverse types) new-env)
           (values ty (combine-effects fx effects))))
        (quote (-lit (second it)))
        (obj
+        ;; TODO clean up / simplify here
         (bb alist (plist-alist (cdr it))
-            :db (named-alist . fx)
+            :db (parsed-alist . fx)
             (reduce (lambda (acc pair)
                       (bb :db (alist . fx) acc
                           :db (key . unparsed) pair
-                          tyname (and (symbolp unparsed) unparsed)
+                          ;; tyname (and (symbolp unparsed) unparsed)
                           :mv (ty nfx) (parse-type unparsed env)
-                          (cons (acons key (cons tyname ty) alist) 
+                          (cons (acons key ty alist) 
                                 (combine-effects nfx fx))))
 
                     alist
                     :initial-value (cons nil nil))
-            :mv (names name-fx) (ensure-type-names named-alist env :key #'cdr)
-            new-alist (mapcar (lambda (name pair)
-                                (cons (car pair) name))
-                              names
-                              named-alist)
-            (values (-obj new-alist env) (combine-effects name-fx fx))))
-       (prop (-prop (second it) (third it) env))))
+            ;; :mv (names name-fx) (ensure-type-names named-alist env :key #'cdr)
+            ;; new-alist (mapcar (lambda (name pair)
+            ;;                     (cons (car pair) name))
+            ;;                   names
+            ;;                   named-alist)
+            (values (-obj parsed-alist env) fx)))
+       (prop
+        (bb anon-var (gensym "var")
+            new-env (apply-effects env (vfx anon-var (second it)))  
+            (values (-prop anon-var (third it) new-env))))))
     (t (error "unimplemented"))))
 
 ;;; ---- equalp representations for complex types
@@ -602,6 +613,18 @@ so that it can be 'evaluated'
   (declare (ignore env))
   (equalp a b))
 
+(defmethod ty-equal ((a -name) (b -name) env)
+  (ty-equal
+   (lookup-type (-name-ty a) (-name-env a) :allow-unknowns t)
+   (lookup-type (-name-ty b) (-name-env b) :allow-unknowns t)
+   env))
+
+(defmethod ty-equal ((a ty) (b -name) env)
+  (ty-equal a (lookup-type (-name-ty b) (-name-env b) :allow-unknowns t) env))
+
+(defmethod ty-equal ((a -name) (b ty) env)
+  (ty-equal (lookup-type (-name-ty a) (-name-env a) :allow-unknowns t) b env))
+
 (defmethod ty-equal ((a -unknown) (b -unknown) env)
   (declare (ignore a b env))
   nil)
@@ -716,14 +739,26 @@ so that it can be 'evaluated'
     (get
      (bb
        :db (obj prop) (cdr form)
-       :mv (_ ty-name fx) (ty-of obj env)
-       ty (-prop ty-name prop env)
-       (introduce ty fx env)))
+       :mv (ty _ fx) (ty-of obj env)
+       var-name (if (symbolp obj) obj (gensym "var"))
+       fx (if (symbolp obj)
+              fx
+              (let ((tyname (make-type-name)))
+                (combine-effects fx
+                                 (vfx var-name tyname)
+                                 (tfx tyname ty))))
+       new-env (apply-effects env fx)
+       ;; FIXME: remove this call to introduce
+       (introduce (-prop var-name prop new-env) fx env)))
     (type
      (bb
        :db (tyname unparsed) (cdr form)
-       :mv (type fx) (parse-type unparsed env)
-       (values (-empty) nil (combine-effects (tfx tyname type) fx))))
+       namety (-name tyname nil env)
+       namefx (tfx tyname namety)
+       new-env (apply-effects env namefx)
+       :mv (type fx) (parse-type unparsed new-env)
+       (setf (-name-ty namety) type)
+       (values (-empty) nil (combine-effects (tfx tyname type) namefx fx))))
     (declare
      (bb :db (varname typename) (cdr form)
          name (make-type-name)
@@ -771,12 +806,22 @@ so that it can be 'evaluated'
                               (cons bn b)
                               (cons cn ty)))))))
 
+(defun reference-ty-p (ty)
+  (typecase ty
+    ((or -name -var) t)
+    (t nil)))
+
+
 (defmethod lookup-type-through-vars (name env &key allow-unknowns)
-  (loop
-     for ty-name = name then (-var-ref ty)
-     for ty = (lookup-type ty-name env :allow-unknowns allow-unknowns)
-     while (-var-p ty)
-     finally (return ty)))
+  (flet ((deref (ty)
+           (typecase ty
+             (-var (-var-ref ty))
+             (-name (-name-ty ty)))))
+    (loop
+       for ty-name = name then (deref ty)
+       for ty = (lookup-type ty-name env :allow-unknowns allow-unknowns)
+       while (reference-ty-p ty)
+       finally (return ty))))
 
 (defun extract-prop-type (prop env)
   (let ((target (lookup-type (-prop-ty prop) env))
@@ -837,6 +882,18 @@ so that it can be 'evaluated'
 (defmethod refineable? ((var -var) (nar ty) env)
   (refineable? (lookup-type (-var-ref var) env) nar env))
 
+(defmethod refineable? ((name -name) (nar ty) env)
+  (refineable? (lookup-type (-name-ty name) (-name-env name))
+               nar env))
+
+(defmethod refineable? ((a -name) (b -name) env)
+  (refineable? (lookup-type (-name-ty a) (-name-env a))
+               (lookup-type (-name-ty b) (-name-env b))
+               env))
+
+(defmethod refineable? ((nar ty) (name -name) env)
+  (refineable? nar (lookup-type (-name-ty name) (-name-env name)) env))
+
 (defmethod refineable? ((gen -or) (nar ty) env)
   (or
    (ty-equal gen nar env)
@@ -850,6 +907,22 @@ so that it can be 'evaluated'
   ;; (print (list (type-of gen) '=> (type-of narrow)))
   (call-next-method))
 
+(defmethod refine (name (a -name) (b -name) env)
+  (refine name
+          (lookup-type (-name-ty a) (-name-env a))
+          (lookup-type (-name-ty b) (-name-env b))
+          env))
+
+(defmethod refine (name (a ty) (b -name) env)
+  (refine name a
+          (lookup-type (-name-ty b) (-name-env b))
+          env))
+
+(defmethod refine (name (a -name) (b ty) env)
+  (refine name
+          (lookup-type (-name-ty a) (-name-env a))
+          b env))
+
 (defmethod refine (name (gen ty) (narrow ty) env)
   (unless (ty-equal gen narrow env)
     (make-effects
@@ -857,7 +930,7 @@ so that it can be 'evaluated'
      :errors (list (format nil "Cannot narrow ~A to ~A" gen narrow)))))
 
 (defmethod refine :around (name (gen -var) (narrow ty) env)
-  (let ((changes (refine name (lookup-type (-var-ref gen) env) narrow env)))
+  (let ((changes (refine name (lookup-type-through-vars (-var-ref gen) env) narrow env)))
     (when changes
       (let ((replacer (make-type-name))) 
         (make-effects
