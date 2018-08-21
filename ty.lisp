@@ -18,7 +18,7 @@
               (let* ((vals (pop clauses))
                      (form (pop clauses))
                      (ignore (when (member '_ vals)
-                               `((declare (ignore _))))))
+                               (list '(declare (ignore _))))))
                 (push (list* 'multiple-value-bind vals form ignore) threads)))
              ((and (symbolp it) clauses)
               (let ((var it)
@@ -32,7 +32,7 @@
 
 ;; inspired by ron garret's ergolib
 (defmacro bb (&body clauses)
-  (%bb-thread-clauses clauses))
+  (%bb-thread-clauses (copy-tree clauses)))
 
 (defun alist-get (sym alist &key (test 'eq))
   (cdr (assoc sym alist :test test)))
