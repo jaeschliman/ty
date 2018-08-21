@@ -303,6 +303,55 @@ it should carry within it a link to its definition environment if needed,
 so that it can be 'evaluated'
 
 
+now the annoying part: refining vars.
+so while a type is a like a closure, we need a dynamic binding environment
+for vars to handle /refining/.
+so it looks like `refine!' should have been a form more like `let',
+e.g.
+(refine (x int)
+  y)
+
+where within the body of `refine' we bind some special var that overrides
+variable type lookups e.g. `*refinements*'
+
+any type which will then escape the body of refine (its final form) will
+then (if needed) be annotated with the new (-refine alist ty) type, who's
+definition is such that when extracting the inner type, it is evaluated
+under the refinement bindings in alist.
+
+possible issues:
+- what about variable shadowing?
+  this will have to be addressed eventually
+  by no longer using symbols to represent a binding. we'll need some sort of
+  object, be it a cons or whatever.
+- what about `concretize', which uses a queue instead of recursion?
+  will have to wrap calls to enqueue to preserve dynamic environment :P
+- what about nesting refinements to the same binding?
+  rather than simply consing onto the front of `*refinements*', want to
+  `and' the existing types together
+
+further thoughts:
+how does this address propagation, which is the real goal?
+so:
+  a = {type:foo, data:bar } | {type: baz, data:quux};
+  {type, data} = a;
+  refine (type = foo) {
+    data; //should eq bar
+  } 
+here, type := (prop a type)
+  where a = (or {type foo} {type baz})
+so we seek to refine (prop a type) to type 'foo having determined that it is possible,
+which means a must be one of (ignoring -var and -name):
+  an -obj type (we are done)
+  a -prop type which resolves to one of these cases
+  an -or type which contains multiple of these cases
+ignoring the -prop case, which seems a little complicated for now,
+we have both the var name and the -or to which it refers. we can therefore
+simply narrow the -or type, and return a cons of (var . narrowed-ty)
+what about the -prop case? I'll need an example to work from...
+instinct says it may be enough to simply recurse in that case
+
+
 |#
 
 #|
