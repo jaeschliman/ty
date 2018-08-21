@@ -351,6 +351,41 @@ simply narrow the -or type, and return a cons of (var . narrowed-ty)
 what about the -prop case? I'll need an example to work from...
 instinct says it may be enough to simply recurse in that case
 
+----------------------------------------
+
+upon further reflection, nesting `refine' may be problematic
+e.g.
+
+(do
+ (declare x (or a b c))
+ (refine (x (or a b))
+   (refine (x b)
+      x)))
+
+x would now have the type (refine (x (or a b)) (refine (x b) (or a b c)))
+how do we evaluate these in turn / combine the refinements?
+it would appear that inner refinements can only make a type more specific,
+bottoming out at -empty. so perhaps there is no issue here after all,
+and inner bindings can simply be consed on.
+ 
+----------------------------------------
+
+so what is the list of ingredients?
+* a var `*refinements*', alist which overrides variable lookup
+* a macro `with-refinements' which manipulates it appropriately
+* a type struct `-refine' which dynamically binds `*refinements*' when evaluated
+* a uniform method for "evaluating" types, specifically (for now) for equality.
+  suggest a new method `equalp-representation', ty-equal can then be reduced to
+  (equalp (equalp-representation a) (equalp-representation b)), no environment needed.
+  although perhaps we leave it more-or-less as is, as there are more opportunities for
+  optimization with more specific methods.
+* support in `concretize'
+* support for `-refine' in the e.g. obj-to-table, -prop lookup.
+* a new branch for `refine' in the evaluator
+* a new implementation of the `refine' function
+
+good news is, we should be able to keep `refinable?' so it's
+not /all/ getting thrown out
 
 |#
 
