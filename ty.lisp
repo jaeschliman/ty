@@ -106,7 +106,7 @@
   (format stream "[~A ~A.~A]" (ty-name self) (-prop-var self) (-prop-prop self)))
 
 (defty -var var ;;TODO: delete me
-  (ref nil :type symbol))
+  (ref nil :type tyref))
 
 (defmethod print-object ((self -var) stream)
   (format stream "<~A : ~A>" (ty-name self) (-var-ref self)))
@@ -115,7 +115,7 @@
   (print-name nil :type symbol)
   (ty nil :type tyref)
   (env nil :type env))
-(defmethod print-object ((self -var) stream)
+(defmethod print-object ((self -name) stream)
   (format stream "[~A : ~A]" (-name-print-name self) (-name-ty self)))
 
 
@@ -321,6 +321,14 @@ so that it can be 'evaluated'
 (defstruct effects
   vars types errors)
 
+(defmethod lookup-var ((var symbol) env)
+  (bb it (ensure-car (alist-get var (env-vars env)))
+      (assert it)
+      it))
+
+(defmethod lookup-var-meta ((var symbol) env)
+  (cdr (ensure-list (alist-get var (env-vars env)))))
+
 (defmethod lookup-type ((ty ty) env &key allow-unknowns)
   (declare (ignore env allow-unknowns))
   ty)
@@ -355,6 +363,8 @@ so that it can be 'evaluated'
 
 (defun vfx (&rest keys-and-values)
   (make-effects :vars (plist-alist keys-and-values)))
+(defun v-metafx (var ty meta)
+  (make-effects :vars (list (cons var (cons ty meta)))))
 (defun tfx (&rest keys-and-values)
   (make-effects :types (plist-alist keys-and-values)))
 (defun efx (&rest messages)
@@ -704,9 +714,7 @@ so that it can be 'evaluated'
     (values ty ty-name (apply-effects env side-effects))))
 
 (defmethod ty-of ((var symbol) env)
-  (let* ((ty-name (alist-get var (env-vars env)))
-         (ty      (alist-get ty-name (env-types env))))
-    (values ty ty-name nil)))
+  (values (lookup-var var env) nil nil))
 
 (defmethod ty-of ((num integer) env)
   (values (alist-get 'int (env-types env)) 'int nil))
@@ -724,6 +732,13 @@ so that it can be 'evaluated'
              fx (combine-effects next-fx fx))
      finally (return (values ty ty-name fx))))
 
+(defun add-meta-ref (var-name current-ty ref-ty env)
+  (bb
+    meta (lookup-var-meta var-name env)
+    existing-refs (alist-get :refs meta)
+    new-meta (acons :refs (cons ref-ty existing-refs) meta)
+    (v-metafx var-name current-ty new-meta)))
+
 ;; welcome to the evaluator
 (defmethod ty-of ((form list) env)
   (ecase (car form)
@@ -740,16 +755,14 @@ so that it can be 'evaluated'
      (bb
        :db (obj prop) (cdr form)
        :mv (ty _ fx) (ty-of obj env)
-       var-name (if (symbolp obj) obj (gensym "var"))
-       fx (if (symbolp obj)
-              fx
-              (let ((tyname (make-type-name)))
-                (combine-effects fx
-                                 (vfx var-name tyname)
-                                 (tfx tyname ty))))
-       new-env (apply-effects env fx)
-       ;; FIXME: remove this call to introduce
-       (introduce (-prop var-name prop new-env) fx env)))
+       (assert ty)
+       simple-ref? (symbolp obj)
+       var-name (if simple-ref? obj (gensym "var"))
+       new-ty (-prop var-name prop env)
+       new-fx (combine-effects fx (add-meta-ref var-name ty new-ty env))
+       new-env (apply-effects env new-fx)
+       (setf (-prop-env new-ty) new-env)
+       (values new-ty nil new-fx)))
     (type
      (bb
        :db (tyname unparsed) (cdr form)
@@ -776,13 +789,11 @@ so that it can be 'evaluated'
     (def
      (bb
        :db (varname subform) (cdr form)
-       :mv (ty type-name fx) (ty-of subform env)
+       :mv (ty _ fx) (ty-of subform env)
        (assert (not (-empty-p ty)))
-       var-type (make-type-name)
        (values (-empty) nil
                (combine-effects
-                (vfx varname var-type)
-                (tfx var-type (-var type-name))
+                (vfx varname (-var ty))
                 fx))))
     (type-equal?
      (bb

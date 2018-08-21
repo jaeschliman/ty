@@ -147,7 +147,7 @@
   (bb prop-name (-prop-prop ty)
       env (-prop-env ty)
       prop-ty (-prop-ty ty)
-      ref-ty (alist-get prop-ty (env-types env))
+      ref-ty (lookup-type prop-ty env)
       (assert ref-ty)
       (flet ((get-prop (from)
                (if (and (listp from)

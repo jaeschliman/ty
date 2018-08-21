@@ -895,3 +895,10 @@
    (type intlist (obj val int next (or intlist 'null)))
    (declare x intlist)
    x))
+
+(see '(do
+       (type a (obj a 'a b 'b))
+       (declare x a)
+       (def y (get x a))
+       (def z (get x b))
+       z))
