@@ -114,10 +114,14 @@
     `(-obj ,(list->qqalist rows))))
 
 (test basic-checks-0
-  (ty-full-assert (-int) 'a nil
+  (ty-full-assert 'a nil nil
       'x
     (env :vars `((x . a))
          :types `((a . ,(-int)))))
+
+  (ty-full-assert (-int) nil nil
+      'x
+    (env :vars `((x . ,(-int)))))
 
   ;; (ty-full-assert (-obj `((a . row-a))) 'a nil
   ;;     'x
@@ -186,30 +190,35 @@
   (ty-assert (-int) '(do x x)
              (envq :vars ((x 'int))))
 
-  (ty-assert (-int) '(do (refine! x int) x)
-             (envq :vars ((x 'int))))
+  (when nil
+    (ty-assert (-int) '(do (refine! x int) x)
+               (envq :vars ((x 'int)))))
 
-  (ty-assert (-int) '(do (refine! x int) x)
-             (envq :vars ((x 'x))
-                   :types ((x (-int)))))
+  (when nil
+    (ty-assert (-int) '(do (refine! x int) x)
+               (envq :vars ((x 'x))
+                     :types ((x (-int))))))
 
-  (ty-assert (-empty) '(do (refine! x foo) x)
-             (envq :vars ((x 'x))
-                   :types ((foo (-lit 'foo))
-                           (x   (-int)))))
+  (when nil
+    (ty-assert (-empty) '(do (refine! x foo) x)
+               (envq :vars ((x 'x))
+                     :types ((foo (-lit 'foo))
+                             (x   (-int))))))
 
-  (ty-assert (-lit 'foo) '(do (refine! x foo) x)
-             (envq :vars ((x 'x))
-                   :types ((foo (-lit 'foo))
-                           (x   (-or (-lit 'foo) (-int) *base-env*)))))
+  (when nil
+    (ty-assert (-lit 'foo) '(do (refine! x foo) x)
+               (envq :vars ((x 'x))
+                     :types ((foo (-lit 'foo))
+                             (x   (-or (-lit 'foo) (-int) *base-env*))))))
 
-  (ty-assert `(or ,(-lit 'foo) ,(-lit 'baz))
-             '(do
-               (type a (or 'foo 'bar))
-               (type b (or 'foo 'baz))
-               (type x (or a b))
-               (declare x x)
-               (refine! x b) x))
+  (when nil
+    (ty-assert `(or ,(-lit 'foo) ,(-lit 'baz))
+               '(do
+                 (type a (or 'foo 'bar))
+                 (type b (or 'foo 'baz))
+                 (type x (or a b))
+                 (declare x x)
+                 (refine! x b) x)))
 
   )
 
@@ -312,45 +321,50 @@
 
   (ty-assert (-lit 'foo) '(do (declare x foo) x) *var-env-0)
 
-  (ty-assert (-lit 'foo )
-             '(do
-               (declare x foo)
-               (refine! x foo)
-               x)
-             *var-env-0)
+  (when nil
+    (ty-assert (-lit 'foo )
+               '(do
+                 (declare x foo)
+                 (refine! x foo)
+                 x)
+               *var-env-0))
 
-  (ty-assert (-empty)
-             '(do
-               (declare x foo)
-               (declare y foo)
-               (refine! x bar)
-               x)
-             *var-env-0)
+  (when nil
+    (ty-assert (-empty)
+               '(do
+                 (declare x foo)
+                 (declare y foo)
+                 (refine! x bar)
+                 x)
+               *var-env-0))
 
-  (ty-assert (-lit 'foo)
-             '(do
-               (declare x foo)
-               (declare y foo)
-               (refine! x bar)
-               y)
-             *var-env-0)
+  (when nil
+    (ty-assert (-lit 'foo)
+               '(do
+                 (declare x foo)
+                 (declare y foo)
+                 (refine! x bar)
+                 y)
+               *var-env-0))
   
-  (ty-assert (-lit 'bar)
-             '(do
-               (type t (or foo bar))
-               (declare x t)
-               (refine! x bar)
-               x)
-             *var-env-0)
+  (when nil
+    (ty-assert (-lit 'bar)
+               '(do
+                 (type t (or foo bar))
+                 (declare x t)
+                 (refine! x bar)
+                 x)
+               *var-env-0))
 
-  (ty-assert `(or ,(-lit 'foo) ,(-lit 'bar))
-             '(do
-               (type t (or foo bar))
-               (declare x t)
-               (declare y t)
-               (refine! x bar)
-               y)
-             *var-env-0))
+  (when nil
+    (ty-assert `(or ,(-lit 'foo) ,(-lit 'bar))
+               '(do
+                 (type t (or foo bar))
+                 (declare x t)
+                 (declare y t)
+                 (refine! x bar)
+                 y)
+               *var-env-0)))
 
 
 (test var-tests-1
@@ -376,43 +390,36 @@
      (declare x p)
      x))
 
-  (ty-assert
-   (-lit 'foo)
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type a (obj type foo))
-     (type b (obj type bar))
-     (type p-a (prop a type))
-     (type p-b (prop b type))
-     (type p (or p-a p-b))
-     (declare x p)
-     (refine! x foo)
-     x))
+  (when nil
+    (ty-assert
+     (-lit 'foo)
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type p-a (prop a type))
+       (type p-b (prop b type))
+       (type p (or p-a p-b))
+       (declare x p)
+       (refine! x foo)
+       x)))
 
-  (ty-assert
-   `(or ,(-lit 'foo) ,(-lit 'bar))
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type a (obj type foo))
-     (type b (obj type bar))
-     (type p-a (prop a type))
-     (type p-b (prop b type))
-     (type p (or p-a p-b))
-     (declare x p)
-     (declare y p)
-     (refine! x foo)
-     y))
-
-  (ty-assert
-   (-lit 'foo)
-   '(do
-     (type foo 'foo)
-     (type a (obj type foo))
-     (declare object a)
-     (def x (get object type))
-     x))
+  (when nil
+    (ty-assert
+     `(or ,(-lit 'foo) ,(-lit 'bar))
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type p-a (prop a type))
+       (type p-b (prop b type))
+       (type p (or p-a p-b))
+       (declare x p)
+       (declare y p)
+       (refine! x foo)
+       y)))
 
   (ty-assert
    (-lit 'foo)
@@ -421,8 +428,18 @@
      (type a (obj type foo))
      (declare object a)
      (def x (get object type))
-     (refine! x foo)
      x))
+
+  (when nil
+    (ty-assert
+     (-lit 'foo)
+     '(do
+       (type foo 'foo)
+       (type a (obj type foo))
+       (declare object a)
+       (def x (get object type))
+       (refine! x foo)
+       x)))
 
   (ty-assert
    `(or ,(-lit 'foo) ,(-lit 'bar))
@@ -436,18 +453,19 @@
      (def x (get object type))
      x))
 
-  (ty-assert
-   (-lit 'foo)
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type a (obj type foo))
-     (type b (obj type bar))
-     (type c (or a b))
-     (declare object c)
-     (def x (get object type))
-     (refine! x foo)
-     x))
+  (when nil
+    (ty-assert
+     (-lit 'foo)
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type c (or a b))
+       (declare object c)
+       (def x (get object type))
+       (refine! x foo)
+       x)))
 
   (when nil ;;; FIXME
     (ty-assert
@@ -464,20 +482,21 @@
        (refine! x foo)
        y)))
 
-  (ty-assert
-   `(or ,(-lit 'foo) ,(-lit 'bar))
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type a (obj type foo))
-     (type b (obj type bar))
-     (type c (or a b))
-     (declare object c)
-     (declare object2 c)
-     (def x (get object type))
-     (def y (get object2 type))
-     (refine! x foo)
-     y))
+  (when nil
+    (ty-assert
+     `(or ,(-lit 'foo) ,(-lit 'bar))
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type a (obj type foo))
+       (type b (obj type bar))
+       (type c (or a b))
+       (declare object c)
+       (declare object2 c)
+       (def x (get object type))
+       (def y (get object2 type))
+       (refine! x foo)
+       y)))
 
   (when nil ;; FIXME
     (ty-assert
@@ -496,21 +515,22 @@
        (refine! x foo)
        y)))
 
-  (ty-assert
-   (-lit 'foo)
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type data-foo 'data-foo)
-     (type data-bar 'data-bar)
-     (type a (obj type foo data data-foo))
-     (type b (obj type bar data data-bar))
-     (type c (or a b))
-     (type d (obj nested c))
-     (declare object d)
-     (def x (get (get object nested) type))
-     (refine! x foo)
-     x))
+  (when nil
+    (ty-assert
+     (-lit 'foo)
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type data-foo 'data-foo)
+       (type data-bar 'data-bar)
+       (type a (obj type foo data data-foo))
+       (type b (obj type bar data data-bar))
+       (type c (or a b))
+       (type d (obj nested c))
+       (declare object d)
+       (def x (get (get object nested) type))
+       (refine! x foo)
+       x)))
 
   (when nil ;; FIXME
     (ty-assert
@@ -530,40 +550,42 @@
        (refine! x foo)
        y)))
 
-  (ty-assert
-   `(or ,(-lit 'data-foo) ,(-lit 'data-bar))
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type data-foo 'data-foo)
-     (type data-bar 'data-bar)
-     (type a (obj type foo data data-foo))
-     (type b (obj type bar data data-bar))
-     (type c (or a b))
-     (type d (obj nested c))
-     (declare object d)
-     (declare object2 d)
-     (def x (get (get object nested) type))
-     (def y (get (get object nested) data))
-     (def z (get (get object2 nested) data))
-     (refine! x foo)
-     z))
+  (when nil
+    (ty-assert
+     `(or ,(-lit 'data-foo) ,(-lit 'data-bar))
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type data-foo 'data-foo)
+       (type data-bar 'data-bar)
+       (type a (obj type foo data data-foo))
+       (type b (obj type bar data data-bar))
+       (type c (or a b))
+       (type d (obj nested c))
+       (declare object d)
+       (declare object2 d)
+       (def x (get (get object nested) type))
+       (def y (get (get object nested) data))
+       (def z (get (get object2 nested) data))
+       (refine! x foo)
+       z)))
 
-  (ty-assert
-   (-lit 'foo)
-   '(do
-     (type foo 'foo)
-     (type bar 'bar)
-     (type data-foo 'data-foo)
-     (type data-bar 'data-bar)
-     (type a (obj type foo data data-foo))
-     (type b (obj type bar data data-bar))
-     (type c (or a b))
-     (type d (obj nested c))
-     (declare object d)
-     (def nest (get object nested))
-     (refine! nest a)
-     (get nest type)))
+  (when nil
+    (ty-assert
+     (-lit 'foo)
+     '(do
+       (type foo 'foo)
+       (type bar 'bar)
+       (type data-foo 'data-foo)
+       (type data-bar 'data-bar)
+       (type a (obj type foo data data-foo))
+       (type b (obj type bar data data-bar))
+       (type c (or a b))
+       (type d (obj nested c))
+       (declare object d)
+       (def nest (get object nested))
+       (refine! nest a)
+       (get nest type))))
 
   (when nil ;;FIXME
     (ty-assert
@@ -760,39 +782,42 @@
          x)
        *recursive-cons-type-env))
 
-(chk '(do
-       (type foo 'foo)
-       (type bar 'bar)
-       (type data-foo 'data-foo)
-       (type data-bar 'data-bar)
-       (type a (obj type foo data data-foo))
-       (type b (obj type bar data data-bar))
-       (type c (or a b))
-       (type d (obj nested c))
-       (declare object d)
-       ;; (def! nest (get object nested)) ;;sigh....
-       (def nest (get object nested)) ;;sigh....
-       (def x (get (get object nested) type))
-       (def y (get (get object nested) data))
-       (refine! nest a)
-       y)) 
+(when nil
+  (chk '(do
+         (type foo 'foo)
+         (type bar 'bar)
+         (type data-foo 'data-foo)
+         (type data-bar 'data-bar)
+         (type a (obj type foo data data-foo))
+         (type b (obj type bar data data-bar))
+         (type c (or a b))
+         (type d (obj nested c))
+         (declare object d)
+         ;; (def! nest (get object nested)) ;;sigh....
+         (def nest (get object nested)) ;;sigh....
+         (def x (get (get object nested) type))
+         (def y (get (get object nested) data))
+         (refine! nest a)
+         y))) 
 
-(chk '(do
-       (type foo 'foo)
-       (type bar 'bar)
-       (type data-foo 'data-foo)
-       (type data-bar 'data-bar)
-       (type a (obj type foo data data-foo))
-       (type b (obj type bar data data-bar))
-       (type c (or a b))
-       (type d (obj nested c))
-       (declare object d)
-       (declare object2 d)
-       (def! nest (get object nested)) ;;sigh...
-       (def x (get (get object nested) data))
-       (def y (get (get object2 nested) data))
-       (refine! nest a)
-       y)) 
+(when nil
+  (chk '(do
+         (when nil)
+         (type foo 'foo)
+         (type bar 'bar)
+         (type data-foo 'data-foo)
+         (type data-bar 'data-bar)
+         (type a (obj type foo data data-foo))
+         (type b (obj type bar data data-bar))
+         (type c (or a b))
+         (type d (obj nested c))
+         (declare object d)
+         (declare object2 d)
+         (def! nest (get object nested)) ;;sigh...
+         (def x (get (get object nested) data))
+         (def y (get (get object2 nested) data))
+         (refine! nest a)
+         y))) 
 
 (chk '(do
        (type foo 'foo)
@@ -874,14 +899,6 @@
        (declare x a)
        x))
 
-(bb :db (ty tyname env)
-    (see '(do
-           (type a (or 'a 'b))
-           (declare x a)
-           x))
-    or (lookup-type-through-vars tyname env)
-    (or-to-table or env))
-
 (when nil
   (chk '(do
          (type a1 (obj type 'a next (or (obj type 'end)
@@ -902,3 +919,29 @@
        (def y (get x a))
        (def z (get x b))
        z))
+
+(print (ty-of '(do
+                (type a (or 'a 'b 'c))
+                (declare x a)
+                (refine (x 'b) x))
+              *base-env*))
+
+(print (ty-of '(do
+                (type a (obj type 'a data 'a-data))
+                (type b (obj type 'b data 'b-data))
+                (type c (or a b))
+                (declare x c)
+                (def y (get x type))
+                (def z (get x data))
+                (refine (x 'a) y))
+              *base-env*))
+
+(ty-of '(do
+         (type a (obj type 'a data 'a-data))
+         (type b (obj type 'b data 'b-data))
+         (type c (or a b))
+         (declare x c)
+         (def y (get x type))
+         (def z (get x data))
+         (refine (y 'a) z))
+       *base-env*)

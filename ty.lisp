@@ -99,8 +99,6 @@
   (var nil :type symbol) ;;TODO: change to VAR
   (prop nil :type symbol)
   (env nil :type env))
-(defun -prop-ty (prop)
-  (alist-get (-prop-var prop) (env-vars (-prop-env prop))))
 
 (defmethod print-object ((self -prop) stream)
   (format stream "[~A ~A.~A]" (ty-name self) (-prop-var self) (-prop-prop self)))
@@ -120,6 +118,26 @@
 
 
 (defty -unknown unknown)
+
+(defty -refine refine
+  (env nil :type list)
+  (ty nil :type ty))
+
+(defvar *refinements* nil)
+
+(defmethod call-with-refinements ((-refine -refine) fn)
+  (bb *refinements* (append (-refine-env -refine) *refinements*)
+      (call-with-refinements (-refine-ty -refine) fn)))
+
+(defmethod call-with-refinements ((ty -name) fn)
+  (call-with-refinements (lookup-type-through-vars ty (-name-env ty)) fn))
+
+(defmethod call-with-refinements ((ty ty) fn)
+  (funcall fn ty))
+
+(defmacro with-refinements ((var) &body body)
+  `(call-with-refinements ,var (lambda (,var) ,@body)))
+
 
 #|
 
@@ -387,6 +405,8 @@ so what is the list of ingredients?
 good news is, we should be able to keep `refinable?' so it's
 not /all/ getting thrown out
 
+need to think about the new implementation of `refine', `refine-var'?
+
 |#
 
 #|
@@ -406,9 +426,13 @@ not /all/ getting thrown out
   vars types errors)
 
 (defmethod lookup-var ((var symbol) env)
-  (bb it (ensure-car (alist-get var (env-vars env)))
+  (bb it (or (alist-get var *refinements*)
+             (ensure-car (alist-get var (env-vars env))))
       (assert it)
       it))
+
+(defun -prop-ty (prop)
+  (lookup-var (-prop-var prop) (-prop-env prop)))
 
 (defmethod lookup-var-meta ((var symbol) env)
   (cdr (ensure-list (alist-get var (env-vars env)))))
@@ -540,6 +564,7 @@ not /all/ getting thrown out
               (values (cdr named-ty) fx))))))
 
 (defun create-or-type (list-of-types env)
+  ;; CLEANUP: shouldn't need to cons here
   (create-named-list-of-or-types (mapcar (lambda (it) (cons nil it)) list-of-types)
                                  env))
 
@@ -831,10 +856,22 @@ not /all/ getting thrown out
     (refine!
      (bb
        :db (var ty-name) (cdr form)
-       :mv (gen-ty gen-ty-name) (ty-of var env)
-       nar-ty (alist-get ty-name (env-types env))
-       fx (refine gen-ty-name gen-ty nar-ty env)
+       gen-ty (ty-of var env)
+       nar-ty (lookup-type ty-name env)
+       fx (refine var gen-ty nar-ty env)
        (values (-empty) nil fx)))
+    (refine
+     (bb
+       :db ((var unparsed) expr) (cdr form)
+       gen-ty (lookup-type-through-vars (lookup-var var env) env)
+       parsed (parse-type unparsed env)
+       nar-ty (if (refineable? gen-ty parsed env) parsed (-empty))
+       bindings (cons (cons var nar-ty)
+                      (refine-var-side-effects gen-ty nar-ty env))
+       *refinements* (append bindings *refinements*)
+       result-ty (ty-of expr env)
+       (or (simple-type-p result-ty env)
+           (-refine bindings result-ty))))
     (get
      (bb
        :db (obj prop) (cdr form)
@@ -857,28 +894,25 @@ not /all/ getting thrown out
        (setf (-name-ty namety) type)
        (values (-empty) nil (combine-effects (tfx tyname type) namefx fx))))
     (declare
-     (bb :db (varname typename) (cdr form)
-         name (make-type-name)
-         (values (-empty) nil
-                 (combine-effects
-                  (vfx varname name)
-                  (tfx name (-var typename))))))
-    (def!
-     (bb
-       :db (varname subform) (cdr form)
-       :mv (ty typename fx) (ty-of subform env)
-       (assert (not (-empty-p ty)))
-       (values (-empty) nil
-               (combine-effects (vfx varname typename) fx))))
+     (bb :db (varname unparsed) (cdr form)
+         :mv (ty fx) (parse-type unparsed env)
+         (values (-empty) nil (combine-effects (vfx varname ty) fx))))
     (def
      (bb
        :db (varname subform) (cdr form)
        :mv (ty _ fx) (ty-of subform env)
        (assert (not (-empty-p ty)))
        (values (-empty) nil
-               (combine-effects
-                (vfx varname (-var ty))
-                fx))))
+               (combine-effects (vfx varname ty) fx))))
+    ;; (def
+    ;;  (bb
+    ;;    :db (varname subform) (cdr form)
+    ;;    :mv (ty _ fx) (ty-of subform env)
+    ;;    (assert (not (-empty-p ty)))
+    ;;    (values (-empty) nil
+    ;;            (combine-effects
+    ;;             (vfx varname (-var ty))
+    ;;             fx))))
     (type-equal?
      (bb
        :db (a b) (cdr form)
@@ -921,19 +955,21 @@ not /all/ getting thrown out
 (defun extract-prop-type (prop env)
   (let ((target (lookup-type (-prop-ty prop) env))
         (key  (-prop-prop prop)))
-    (flet ((get-row (obj)
-             (lookup-type (alist-get key (-obj-rows obj)) env)))
-      (typecase target
-        (-obj (values (get-row target) nil))
-        (-or
-         (let ((a (lookup-type (-or-a target) env))
-               (b (lookup-type (-or-b target) env)))
-           ;; FIXME: need to handle nested ors etc
-           ;; FIXME: requires both a and b are object types
-           (if (and (-obj-p a) (-obj-p a))
-               (combine-new-types (get-row a) (get-row b) env)
-               (values (-empty) nil))))
-        (t (values (-empty) nil))))))
+    (with-refinements (target)
+      (flet ((get-row (obj)
+               (lookup-type (alist-get key (-obj-rows obj)) env)))
+        (typecase target
+          (-obj (values (get-row target) nil))
+          (-or
+           (let ((a (lookup-type (-or-a target) env))
+                 (b (lookup-type (-or-b target) env)))
+             ;; FIXME: need to handle nested ors etc
+             ;; FIXME: requires both a and b are object types
+             (if (and (-obj-p a) (-obj-p a))
+                 ;;(combine-new-types (get-row a) (get-row b) env)
+                 (-or (get-row a) (get-row b) env)
+                 (values (-empty) nil))))
+          (t (values (-empty) nil)))))))
 
 ;; this is not being used as named at the moment.
 ;; (refer to usage)
@@ -971,8 +1007,28 @@ not /all/ getting thrown out
 (defmethod make-intersection-type ((nar ty) (gen -or) env)
   (make-intersection-type gen nar env))
 
+;; --- refineable?
+;; contract of refineable
+;; should be true iff gen is a more 'general' type of nar
+
 (defmethod refineable? ((gen ty) (nar ty) env)
-  (ty-equal gen nar env))
+  (bb tn (type-of nar)
+      tg (type-of gen)
+      (or (and (not (eq tn tg))
+               (subtypep tn tg))
+          (ty-equal gen nar env))))
+
+(defmethod refineable? ((gen -refine) (nar ty) env)
+  (with-refinements (gen)
+    (refineable? gen nar env)))
+
+(defmethod refineable? ((gen ty) (nar -refine) env)
+  (with-refinements (nar)
+    (refineable? gen nar env)))
+
+(defmethod refineable? ((gen -refine) (nar -refine) env)
+  (declare (ignore gen nar env))
+  (error "unimplemented"))
 
 (defmethod refineable? ((var -var) (nar ty) env)
   (refineable? (lookup-type (-var-ref var) env) nar env))
@@ -992,8 +1048,54 @@ not /all/ getting thrown out
 (defmethod refineable? ((gen -or) (nar ty) env)
   (or
    (ty-equal gen nar env)
-   (refineable? (lookup-type (-or-a gen) env) nar env)
-   (refineable? (lookup-type (-or-b gen) env) nar env)))
+   (refineable? (lookup-type (-or-a gen) (-or-env gen)) nar env)
+   (refineable? (lookup-type (-or-b gen) (-or-env gen)) nar env)))
+
+(defmethod refineable? ((gen -prop) (nar ty) env)
+  ;; need to extract the specific type of the referenced property,
+  ;; and then possibly check whether /that/ is refineable against nar.
+  (refineable? (extract-prop-type gen env) nar env))
+
+;; --- refine-var
+;; returns an alist of additional variable bindings to types
+;; which should propagate in the refinement
+(defgeneric refine-var-side-effects (gen nar env)
+  (:method ((gen ty) (nar ty) env) (declare (ignore env)) nil)
+  (:method ((gen -refine) (nar ty) env)
+    (with-refinements (gen) (refine-var-side-effects gen nar env)))
+  (:method ((gen ty) (nar -refine) env)
+    (with-refinements (nar) (refine-var-side-effects gen nar env)))
+  (:method ((gen -refine) (nar -refine) env)
+    (declare (ignore env))
+    (error "unimplemented"))
+  (:method ((gen -name) (nar ty) env)
+    (refine-var-side-effects (lookup-type-through-vars gen env) nar env))
+  (:method ((gen ty) (nar -name) env)
+    (refine-var-side-effects gen (lookup-type-through-vars nar env) env))
+  (:method ((gen -name) (nar -name) env)
+    (refine-var-side-effects (lookup-type-through-vars gen env)
+                             (lookup-type-through-vars nar env) env)))
+
+(defun -obj-prop (ty key)
+  (assert (-obj-p ty))
+  (lookup-type (alist-get key (-obj-rows ty)) (-obj-env ty)))
+
+(defmethod refine-var-side-effects ((prop -prop) (nar ty) env)
+  ;; should apply a restriction to the var bound in prop
+  ;; prop currently must be bound to either an -obj or an -or
+  ;; (after looking through the reference types ofc)
+  (bb var (-prop-var prop)
+      gen (-prop-ty prop)
+      key (-prop-prop prop)
+      (with-refinements (gen)
+        (etypecase gen
+          (-obj nil)
+          (-or (bb tys (expand-or-type gen env)
+                   test (fn (ty) (refineable? (-obj-prop ty key) nar env))
+                   kept (remove-if-not test tys)
+                   (break)
+                   (assert kept)
+                   (list (cons var (create-or-type kept env)))))))))
 
 ;; TODO: the narrow type should be assignable to the general type
 ;; refine: named general type + narrow type -> maybe side effects
@@ -1063,10 +1165,6 @@ not /all/ getting thrown out
                  (tfx name (-empty))
                  (efx (format nil "Cannot refine ~A to ~A" gen narrow))))))))
 
-(defmethod refineable? ((gen -prop) (nar ty) env)
-  ;; need to extract the specific type of the referenced property,
-  ;; and then possibly check whether /that/ is refineable against nar.
-  (refineable? (extract-prop-type gen env) nar env))
 
 (defmethod refine (name (gen -prop) (nar ty) env)
   (let* ((target-type (-prop-ty gen))
